@@ -57,6 +57,37 @@ export function saveUserData(d: Map<string, SealUserData>, serverId?: ServerId |
   try { localStorage.setItem(userKey(serverId), JSON.stringify(Array.from(d.values()))); } catch (e) { console.error(e); }
 }
 
+/**
+ * Migra datos legacy (sin servidor) al servidor específico si es la primera vez
+ * que accedes a ese servidor después de la actualización de 1 servidor a N servidores.
+ */
+export function migrateLegacyUserDataIfNeeded(serverId?: ServerId | null): void {
+  if (!serverId) return;
+  
+  try {
+    // Si el servidor ya tiene datos, no migrar nada
+    const existing = localStorage.getItem(userKey(serverId));
+    if (existing) return;
+    
+    // Si no hay datos legacy, nada que migrar
+    const legacyData = localStorage.getItem(STORAGE_KEY_USER_LEGACY);
+    if (!legacyData) return;
+    
+    // Migrar datos legacy al servidor específico
+    localStorage.setItem(userKey(serverId), legacyData);
+    
+    // También migrar precios legacy si existen
+    const legacyPrices = localStorage.getItem(STORAGE_KEY_PRICES_LEGACY);
+    if (legacyPrices && !localStorage.getItem(pricesKey(serverId))) {
+      localStorage.setItem(pricesKey(serverId), legacyPrices);
+    }
+    
+    console.log(`[storage] Migrated legacy user data to server "${serverId}"`);
+  } catch (e) {
+    console.error("[storage] migrateLegacyUserDataIfNeeded:", e);
+  }
+}
+
 // ── Global prices + timestamps individuales ────────────────────
 
 export function loadGlobalPrices(serverId?: ServerId | null): Record<string, number> {

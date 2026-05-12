@@ -12,7 +12,7 @@ import {
   loadGlobalPrices, saveGlobalPrices, loadPriceTimestamps,
   mergeStorageToAppData, smartImportData, type ImportStrategy,
   loadOpenerPrice, saveOpenerPrice, loadIncludeOpener, saveIncludeOpener,
-  autoUpdateFromJSON, getAvailableBackups,
+  autoUpdateFromJSON, getAvailableBackups, migrateLegacyUserDataIfNeeded,
 } from "./lib/storage";
 import { extractUserData } from "./lib/sealMerger";
 import { computeAttrProgress } from "./lib/calculator";
@@ -126,6 +126,7 @@ export default function App() {
 
   useEffect(() => {
     if (!serverId) return;
+    migrateLegacyUserDataIfNeeded(serverId);  // Migra datos legacy si es la primera vez en este servidor
     setReady(false);
     (async () => {
       const base = loadBaseData();

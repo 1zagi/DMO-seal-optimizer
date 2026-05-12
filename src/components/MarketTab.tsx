@@ -8,6 +8,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { AppData } from "../lib/types";
 import type { Lang } from "../lib/i18n";
 import { formatM } from "../lib/currency";
+import { isDMONoMarket } from "../lib/noMarketSeals";
 
 interface TrendEntry {
   sealId:    string;
@@ -44,10 +45,10 @@ export function MarketTab({ data, lang, fetchPricesNDaysAgo, fetchPriceHistory }
     fetchPricesNDaysAgo(7).then(map => { setOldPrices(map); setLoading(false); });
   }, []);
 
-  // ── Calcular tendencias ───────────────────────────────────
+  // ── Calcular tendencias (excluye sellos sin mercado activo) ──
   const trends = useMemo<TrendEntry[]>(() => {
     return Object.values(data.seals)
-      .filter(s => s.priceM > 0)
+      .filter(s => s.priceM > 0 && !isDMONoMarket(s.name))
       .map(s => {
         const current  = s.priceM;
         const previous = oldPrices.get(s.name);
@@ -219,10 +220,7 @@ export function MarketTab({ data, lang, fetchPricesNDaysAgo, fetchPriceHistory }
             </p>
           ) : (
             <>
-              {/* Mini sparkline en SVG */}
               <MiniChart points={history} />
-
-              {/* Tabla compacta de los últimos registros */}
               <div className="mt-3 space-y-1 max-h-48 overflow-y-auto">
                 {[...history].reverse().map((p, i) => {
                   const prev = history[history.length - 2 - i];
@@ -283,7 +281,6 @@ function MiniChart({ points }: { points: { price_m: number; recorded_at: string 
       </defs>
       <path d={fill} fill="url(#grad)" />
       <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
-      {/* Punto final */}
       <circle cx={xs[xs.length-1]} cy={ys[ys.length-1]} r="4" fill={color} />
     </svg>
   );

@@ -3,6 +3,7 @@
 //  Mejoras:
 //  - Separación visual clara entre "Mi Rank" (personal) y "Precio" (global)
 //  - Indicador de precio desactualizado (+7 días sin cambio)
+//  - Badge "evento" para sellos sin mercado activo
 // ============================================================
 
 import { useState, useMemo } from "react";
@@ -11,6 +12,7 @@ import { RANKS, ATTRIBUTES, RANK_COLOR, ATTR_SHORT, ATTR_ICON, PERCENT_ATTRS, fo
 import { CurrencyInput } from "./CurrencyInput";
 import { formatM } from "../lib/currency";
 import { TRANSLATIONS, type Lang } from "../lib/i18n";
+import { isDMONoMarket } from "../lib/noMarketSeals";
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
 
@@ -25,13 +27,10 @@ interface Props {
   onAttrFilterChange: (v: Attribute | null) => void;
   sortKey: "name-asc" | "name-desc" | "stat-desc" | "stat-asc";
   onSortKeyChange: (v: "name-asc" | "name-desc" | "stat-desc" | "stat-asc") => void;
-  /** Timestamps de cuando se actualizó cada precio individualmente */
   priceTimestamps?: Record<string, number>;
 }
 
 type SortKey = "name-asc" | "name-desc" | "stat-desc" | "stat-asc";
-
-// ── Helpers de frescura de precio ─────────────────────────────
 
 function priceAge(ts?: number): "fresh" | "stale" | "unknown" {
   if (!ts) return "unknown";
@@ -48,7 +47,6 @@ function priceAgeLabel(ts: number, lang: Lang): string {
   return lang === "es" ? `hace ${days}d` : `${days}d ago`;
 }
 
-// ── Modal rank ────────────────────────────────────────────────
 function RankModal({ seal, onSelect, onClose, lang }: {
   seal: AppData["seals"][string]; onSelect: (r: Rank) => void;
   onClose: () => void; lang: Lang;
@@ -58,7 +56,6 @@ function RankModal({ seal, onSelect, onClose, lang }: {
       <div className="bg-[#09141f] border border-[#1a3f6e] rounded-2xl p-6 w-80 space-y-4" onClick={e => e.stopPropagation()}>
         <div>
           <p className="text-white font-bold text-sm truncate mb-1">{seal.name}</p>
-          {/* Explicación clara */}
           <div className="flex items-start gap-2 p-2 rounded-lg bg-[#00c8f0]/08 border border-[#00c8f0]/20">
             <span className="text-sm">👤</span>
             <p className="text-[#00c8f0] text-xs font-mono leading-relaxed">
@@ -91,7 +88,6 @@ function RankModal({ seal, onSelect, onClose, lang }: {
   );
 }
 
-// ── Modal precio ──────────────────────────────────────────────
 function PriceModal({ seal, onSave, onClose, lang, priceTs }: {
   seal: AppData["seals"][string]; onSave: (v: number) => void;
   onClose: () => void; lang: Lang; priceTs?: number;
@@ -102,7 +98,6 @@ function PriceModal({ seal, onSave, onClose, lang, priceTs }: {
       <div className="bg-[#09141f] border border-[#1a3f6e] rounded-2xl p-6 w-80 space-y-4" onClick={e => e.stopPropagation()}>
         <div>
           <p className="text-white font-bold text-sm truncate mb-1">{seal.name}</p>
-          {/* Explicación clara */}
           <div className="flex items-start gap-2 p-2 rounded-lg bg-[#ffd700]/08 border border-[#ffd700]/20">
             <span className="text-sm">🌐</span>
             <p className="text-[#ffd700] text-xs font-mono leading-relaxed">
@@ -111,7 +106,6 @@ function PriceModal({ seal, onSave, onClose, lang, priceTs }: {
                 : "This price is GLOBAL — all players on the server will see it. It reflects the current market price."}
             </p>
           </div>
-          {/* Antigüedad del precio */}
           {priceTs && (
             <p className={`text-[10px] font-mono mt-2 ${age === "stale" ? "text-orange-400" : "text-[#5a8aaa]"}`}>
               {age === "stale" ? "⚠ " : "✓ "}
@@ -130,7 +124,6 @@ function PriceModal({ seal, onSave, onClose, lang, priceTs }: {
   );
 }
 
-// ── Componente principal ──────────────────────────────────────
 export function ManageTab({
   data, onUpdate, onPriceChange, lang, search, onSearchChange,
   attrFilter, onAttrFilterChange, sortKey, onSortKeyChange, priceTimestamps = {},
@@ -185,7 +178,6 @@ export function ManageTab({
     if (!attr && (sortKey === "stat-asc" || sortKey === "stat-desc")) onSortKeyChange("name-asc");
   };
 
-  // Contadores de precios desactualizados
   const staleCount = seals.filter(s => s.priceM > 0 && priceAge(priceTimestamps[s.name]) === "stale").length;
   const unknownCount = seals.filter(s => s.priceM > 0 && !priceTimestamps[s.name]).length;
 
@@ -205,33 +197,25 @@ export function ManageTab({
           onClose={() => setPriceModal(null)} />
       )}
 
-      {/* ── Leyenda de los dos tipos de dato ── */}
+      {/* Leyenda tipos de dato */}
       <div className="mb-4 grid grid-cols-2 gap-3">
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#00c8f0]/25 bg-[#00c8f0]/05">
           <span className="text-base">👤</span>
           <div>
-            <p className="text-[#00c8f0] text-xs font-bold font-mono">
-              {lang === "es" ? "Rank — personal" : "Rank — personal"}
-            </p>
-            <p className="text-[#5a8aaa] text-[10px] font-mono leading-tight">
-              {lang === "es" ? "Solo tuyo. No afecta a nadie más." : "Yours only. Doesn't affect others."}
-            </p>
+            <p className="text-[#00c8f0] text-xs font-bold font-mono">{lang === "es" ? "Rank — personal" : "Rank — personal"}</p>
+            <p className="text-[#5a8aaa] text-[10px] font-mono leading-tight">{lang === "es" ? "Solo tuyo. No afecta a nadie más." : "Yours only. Doesn't affect others."}</p>
           </div>
         </div>
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#ffd700]/25 bg-[#ffd700]/05">
           <span className="text-base">🌐</span>
           <div>
-            <p className="text-[#ffd700] text-xs font-bold font-mono">
-              {lang === "es" ? "Precio — global del servidor" : "Price — server-wide"}
-            </p>
-            <p className="text-[#5a8aaa] text-[10px] font-mono leading-tight">
-              {lang === "es" ? "Lo ven todos. Refleja el mercado." : "Everyone sees it. Reflects the market."}
-            </p>
+            <p className="text-[#ffd700] text-xs font-bold font-mono">{lang === "es" ? "Precio — global del servidor" : "Price — server-wide"}</p>
+            <p className="text-[#5a8aaa] text-[10px] font-mono leading-tight">{lang === "es" ? "Lo ven todos. Refleja el mercado." : "Everyone sees it. Reflects the market."}</p>
           </div>
         </div>
       </div>
 
-      {/* Banner de precios desactualizados */}
+      {/* Banner precios desactualizados */}
       {(staleCount > 0 || unknownCount > 0) && (
         <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-lg border border-orange-500/30 bg-orange-500/05">
           <span>⚠</span>
@@ -299,6 +283,7 @@ export function ManageTab({
           const rankColor = rank ? RANK_COLOR[rank] : "#1a3f6e";
           const attrStat  = attrFilter && rank ? (seal.stats?.[attrFilter]?.[rank] ?? 0) : null;
           const attrMax   = attrFilter ? (seal.stats?.[attrFilter]?.["Master"] ?? 0) : null;
+          const noMarket  = isDMONoMarket(seal.name);
           const ts        = priceTimestamps[seal.name];
           const age       = seal.priceM > 0 ? priceAge(ts) : null;
 
@@ -310,7 +295,6 @@ export function ManageTab({
                 <p className="text-white text-xs font-bold leading-tight mb-2 line-clamp-2"
                   title={seal.name} style={{ minHeight: "2.2em" }}>{seal.name}</p>
 
-                {/* Rank — etiquetado claramente como personal */}
                 <div className="mb-1 h-5 flex items-center gap-1">
                   <span className="text-[9px] text-[#2a4558] font-mono">👤</span>
                   {rank
@@ -327,7 +311,7 @@ export function ManageTab({
                   </p>
                 ) : <div className="mb-1 h-4" />}
 
-                {/* Precio — etiquetado como global + indicador de frescura */}
+                {/* Precio */}
                 <div className="mb-3 h-8">
                   <div className="flex items-center gap-1">
                     <span className="text-[9px] text-[#2a4558] font-mono">🌐</span>
@@ -338,6 +322,8 @@ export function ManageTab({
                         </span>
                         <span className="text-[#2a4558]">/seal</span>
                       </span>
+                    ) : noMarket ? (
+                      <span className="text-[#8855cc] text-[10px] font-mono px-1.5 py-0.5 rounded border border-[#8855cc]/30 bg-[#8855cc]/08">🎫 evento</span>
                     ) : (
                       <span className="text-[#2a4558] text-[10px] font-mono">{t.noPrice}</span>
                     )}
@@ -352,7 +338,7 @@ export function ManageTab({
                   )}
                 </div>
 
-                {/* Botones con labels diferenciados */}
+                {/* Botones */}
                 <div className="flex gap-1">
                   <button onClick={() => setRankModal(seal.name)}
                     className="flex-1 py-1 text-[10px] font-bold font-mono rounded border transition-all flex items-center justify-center gap-0.5"
@@ -360,10 +346,18 @@ export function ManageTab({
                     title={lang === "es" ? "Mi rank personal en este sello" : "My personal rank for this seal"}>
                     👤 Rank
                   </button>
-                  <button onClick={() => setPriceModal(seal.name)}
-                    className="flex-1 py-1 text-[10px] font-bold font-mono rounded border border-[#ffd700]/30 text-[#ffd700] hover:border-[#ffd700]/60 hover:bg-[#ffd700]/08 transition-all flex items-center justify-center gap-0.5"
-                    title={lang === "es" ? "Precio global del servidor" : "Server-wide market price"}>
-                    🌐 {lang === "es" ? "Precio" : "Price"}
+                  <button
+                    onClick={() => !noMarket && setPriceModal(seal.name)}
+                    disabled={noMarket}
+                    className={`flex-1 py-1 text-[10px] font-bold font-mono rounded border transition-all flex items-center justify-center gap-0.5 ${
+                      noMarket
+                        ? "border-[#8855cc]/20 text-[#8855cc]/50 cursor-not-allowed"
+                        : "border-[#ffd700]/30 text-[#ffd700] hover:border-[#ffd700]/60 hover:bg-[#ffd700]/08"
+                    }`}
+                    title={noMarket
+                      ? (lang === "es" ? "Sello de evento — sin mercado activo" : "Event seal — no active market")
+                      : (lang === "es" ? "Precio global del servidor" : "Server-wide market price")}>
+                    {noMarket ? "🎫" : "🌐"} {lang === "es" ? "Precio" : "Price"}
                   </button>
                   <button onClick={() => deleteSeal(seal.name)}
                     className="px-2 py-1 text-[10px] font-mono text-[#2a4558] rounded border border-[#1a3f6e] hover:text-red-400 hover:border-red-400/40 transition-all">

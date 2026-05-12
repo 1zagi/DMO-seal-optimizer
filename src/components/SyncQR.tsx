@@ -221,8 +221,8 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
             {(["show", "scan"] as const).map(m => (
               <button key={m} onClick={() => { setMode(m); setScanResult(null); setScanError(""); }}
                 className={`flex-1 py-1.5 rounded text-xs font-mono font-bold border transition-all ${mode === m
-                    ? "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/12"
-                    : "border-[#1a3f6e] text-[#5a8aaa] hover:text-white"
+                  ? "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/12"
+                  : "border-[#1a3f6e] text-[#5a8aaa] hover:text-white"
                   }`}>
                 {m === "show" ? `📤 ${t.showQR}` : `📷 ${t.scanQR}`}
               </button>
@@ -302,8 +302,8 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
               {scanResult && (
                 <button onClick={handleImport} disabled={importing || imported}
                   className={`w-full py-2.5 rounded-xl text-sm font-bold font-mono border transition-all ${imported
-                      ? "border-[#00e676] text-[#00e676] bg-[#00e676]/10"
-                      : "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/10 hover:bg-[#00c8f0]/20"
+                    ? "border-[#00e676] text-[#00e676] bg-[#00e676]/10"
+                    : "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/10 hover:bg-[#00c8f0]/20"
                     }`}>
                   {imported ? `✓ ${t.imported}` : importing ? t.importing : `⬇ ${t.import}`}
                 </button>

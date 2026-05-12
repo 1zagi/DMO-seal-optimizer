@@ -3,18 +3,18 @@
 // ============================================================
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { ServerId } from "./supabase";
+import type { ServerId, ServerPriceEntry } from "./supabase";
 import { fetchServerPrices, upsertSealPrice, subscribeToServerPrices } from "./supabase";
 
 export interface UseServerPricesResult {
-  prices:      Map<string, number>;
+  prices:      Map<string, ServerPriceEntry>;
   loading:     boolean;
   connected:   boolean;
   updatePrice: (sealId: string, priceM: number, prevPriceM?: number) => Promise<void>;
 }
 
 export function useServerPrices(serverId: ServerId | null): UseServerPricesResult {
-  const [prices,    setPrices]    = useState<Map<string, number>>(new Map());
+  const [prices,    setPrices]    = useState<Map<string, ServerPriceEntry>>(new Map());
   const [loading,   setLoading]   = useState(false);
   const [connected, setConnected] = useState(false);
 
@@ -31,9 +31,9 @@ export function useServerPrices(serverId: ServerId | null): UseServerPricesResul
 
   useEffect(() => {
     if (!serverId) return;
-    const unsubscribe = subscribeToServerPrices(serverId, (sealId, priceM) => {
+    const unsubscribe = subscribeToServerPrices(serverId, (sealId, entry) => {
       if (activeRef.current !== serverId) return;
-      setPrices(prev => { const n = new Map(prev); n.set(sealId, priceM); return n; });
+      setPrices(prev => { const n = new Map(prev); n.set(sealId, entry); return n; });
       setConnected(true);
     });
     const timer = setTimeout(() => { if (activeRef.current === serverId) setConnected(true); }, 2_000);
@@ -42,7 +42,8 @@ export function useServerPrices(serverId: ServerId | null): UseServerPricesResul
 
   const updatePrice = useCallback(async (sealId: string, priceM: number, prevPriceM?: number) => {
     if (!serverId) return;
-    setPrices(prev => { const n = new Map(prev); n.set(sealId, priceM); return n; });
+    const optimistic: ServerPriceEntry = { priceM, updatedAtMs: Date.now() };
+    setPrices(prev => { const n = new Map(prev); n.set(sealId, optimistic); return n; });
     await upsertSealPrice(serverId, sealId, priceM, prevPriceM);
   }, [serverId]);
 

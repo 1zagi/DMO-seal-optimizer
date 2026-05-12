@@ -24,25 +24,25 @@ export const ATTRIBUTES = [
 export type Attribute = (typeof ATTRIBUTES)[number];
 
 export const ATTR_SHORT: Record<Attribute, string> = {
-  "AT [Attack Damage]":    "AT",
-  "CT [Critical Hit Rate]":"CT",
-  "HT [Hit Rate]":         "HT",
-  "HP [Health Points]":    "HP",
+  "AT [Attack Damage]": "AT",
+  "CT [Critical Hit Rate]": "CT",
+  "HT [Hit Rate]": "HT",
+  "HP [Health Points]": "HP",
   "DS [Digi-Soul Points]": "DS",
-  "DE [Defense]":          "DE",
-  "BL [Block Rate]":       "BL",
-  "EV [Evade Rate]":       "EV",
+  "DE [Defense]": "DE",
+  "BL [Block Rate]": "BL",
+  "EV [Evade Rate]": "EV",
 };
 
 export const ATTR_ICON: Record<Attribute, string> = {
-  "AT [Attack Damage]":    "⚔️",
-  "CT [Critical Hit Rate]":"🎯",
-  "HT [Hit Rate]":         "🎪",
-  "HP [Health Points]":    "❤️",
+  "AT [Attack Damage]": "⚔️",
+  "CT [Critical Hit Rate]": "🎯",
+  "HT [Hit Rate]": "🎪",
+  "HP [Health Points]": "❤️",
   "DS [Digi-Soul Points]": "💠",
-  "DE [Defense]":          "🛡️",
-  "BL [Block Rate]":       "🔰",
-  "EV [Evade Rate]":       "💨",
+  "DE [Defense]": "🛡️",
+  "BL [Block Rate]": "🔰",
+  "EV [Evade Rate]": "💨",
 };
 
 export const PERCENT_ATTRS = new Set<Attribute>([
@@ -68,16 +68,17 @@ export function parseStat(attr: Attribute, raw: string): number {
 }
 
 export const RANK_COLOR: Record<Rank, string> = {
-  Unopened:  "#4b4b4bff",
-  Normal:    "#1f68c7",
-  Bronze:    "#cd7f32",
-  Silver:    "#b5c4c0",
-  Gold:      "#f1ce04",
-  Platinum:  "#2eceb8",
-  Master:    "#ea75ff",
+  Unopened: "#4b4b4bff",
+  Normal: "#1f68c7",
+  Bronze: "#cd7f32",
+  Silver: "#b5c4c0",
+  Gold: "#f1ce04",
+  Platinum: "#2eceb8",
+  Master: "#ea75ff",
 };
 
 export interface Seal {
+  id: string;
   name: string;
   priceM: number;
   qty: Record<Rank, number>;
@@ -116,9 +117,9 @@ export interface MergedSeal extends Seal {
 
 export interface AttrProgress {
   attribute: Attribute;
-  vActual:   number;
-  vMax:      number;
-  progress:  number;
+  vActual: number;
+  vMax: number;
+  progress: number;
 }
 
 export interface AppData {

@@ -1,327 +1,326 @@
 // ============================================================
 //  storage.ts  —  Persistencia de datos en el navegador
 // ============================================================
-//
-//  localStorage structure:
-//  - "izagi-seals-v2-base": SealBase[] (loaded from JSON, rarely changes)
-//  - "izagi-seals-v2-user": SealUserData[] (user edits: currentRank, price)
 
-import type { AppData, SealBase, SealUserData } from "./types";
+import type { AppData, SealBase, SealUserData, GlobalPrices, PriceBackup } from "./types";
 import { ATTRIBUTES, RANKS, RANK_ORDER } from "./types";
 import { mergeSealData, migrateOldSeal } from "./sealMerger";
+import type { ServerId } from "./supabase";
+import { serverUserKey } from "./serverStore";
 
-const STORAGE_KEY_BASE = "izagi-seals-v2-base";
-const STORAGE_KEY_USER = "izagi-seals-v2-user";
-const OLD_STORAGE_KEY = "izagi-seals-v1"; // Para migración
-const STORAGE_KEY_OPENER_PRICE = "izagi-opener-price";
+const STORAGE_KEY_BASE           = "izagi-seals-v2-base";
+const STORAGE_KEY_USER_LEGACY    = "izagi-seals-v2-user";
+const STORAGE_KEY_PRICES_LEGACY  = "izagi-prices-global";
+const STORAGE_KEY_BACKUPS_LEGACY = "izagi-prices-backups";
+const OLD_STORAGE_KEY            = "izagi-seals-v1";
+const STORAGE_KEY_OPENER_PRICE   = "izagi-opener-price";
 const STORAGE_KEY_INCLUDE_OPENER = "izagi-include-opener";
+const MAX_BACKUPS = 50;
 
-/**
- * Carga user data desde localStorage
- */
-export function loadUserData(): Map<string, SealUserData> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_USER);
-    if (!raw) return new Map();
-    const arr = JSON.parse(raw) as SealUserData[];
-    return new Map(arr.map(u => [u.sealId, u]));
-  } catch {
-    return new Map();
-  }
+export function userKey(serverId?: ServerId | null): string {
+  return serverId ? serverUserKey(serverId) : STORAGE_KEY_USER_LEGACY;
+}
+function pricesKey(serverId?: ServerId | null): string {
+  return serverId ? `izagi-prices-global-${serverId}` : STORAGE_KEY_PRICES_LEGACY;
+}
+function backupsKey(serverId?: ServerId | null): string {
+  return serverId ? `izagi-prices-backups-${serverId}` : STORAGE_KEY_BACKUPS_LEGACY;
 }
 
-/**
- * Carga base data desde localStorage (fallback)
- */
+async function fetchServerJson(serverId?: ServerId | null): Promise<any | null> {
+  if (serverId) {
+    try { const r = await fetch(`/seals_data_${serverId}.json`); if (r.ok) return await r.json(); } catch {}
+  }
+  try { const r = await fetch("/seals_data.json"); if (r.ok) return await r.json(); } catch {}
+  return null;
+}
+
+// ── Base data ─────────────────────────────────────────────────
+
 export function loadBaseData(): SealBase[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_BASE);
-    if (!raw) return [];
-    return JSON.parse(raw) as SealBase[];
-  } catch {
-    return [];
-  }
+  try { const r = localStorage.getItem(STORAGE_KEY_BASE); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+export function saveBaseData(d: SealBase[]): void {
+  try { localStorage.setItem(STORAGE_KEY_BASE, JSON.stringify(d)); } catch (e) { console.error(e); }
 }
 
-/**
- * Guarda user data en localStorage
- */
-export function saveUserData(userData: Map<string, SealUserData>): void {
+// ── User data ──────────────────────────────────────────────────
+
+export function loadUserData(serverId?: ServerId | null): Map<string, SealUserData> {
   try {
-    const arr = Array.from(userData.values());
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(arr));
-  } catch (e) {
-    console.error("[storage] Error saving user data:", e);
-  }
+    const r = localStorage.getItem(userKey(serverId));
+    if (!r) return new Map();
+    return new Map((JSON.parse(r) as SealUserData[]).map(u => [u.sealId, u]));
+  } catch { return new Map(); }
+}
+export function saveUserData(d: Map<string, SealUserData>, serverId?: ServerId | null): void {
+  try { localStorage.setItem(userKey(serverId), JSON.stringify(Array.from(d.values()))); } catch (e) { console.error(e); }
 }
 
-/**
- * Guarda base data en localStorage
- */
-export function saveBaseData(baseData: SealBase[]): void {
+// ── Global prices + timestamps individuales ────────────────────
+
+export function loadGlobalPrices(serverId?: ServerId | null): Record<string, number> {
   try {
-    localStorage.setItem(STORAGE_KEY_BASE, JSON.stringify(baseData));
-  } catch (e) {
-    console.error("[storage] Error saving base data:", e);
-  }
+    const r = localStorage.getItem(pricesKey(serverId));
+    return r ? (JSON.parse(r) as GlobalPrices).prices || {} : {};
+  } catch { return {}; }
 }
 
-/**
- * NEW: Combina base + user data en AppData
- */
+export function loadPriceTimestamps(serverId?: ServerId | null): Record<string, number> {
+  try {
+    const r = localStorage.getItem(pricesKey(serverId));
+    return r ? (JSON.parse(r) as GlobalPrices).priceTimestamps || {} : {};
+  } catch { return {}; }
+}
+
+export function saveGlobalPrices(
+  prices: Record<string, number>,
+  serverId?: ServerId | null,
+  updatedSealId?: string,          // si se pasa, solo actualiza el timestamp de ese sello
+): void {
+  try {
+    const existing = loadGlobalPrices(serverId);
+    if (Object.keys(existing).length > 0) createPriceBackup(existing, serverId);
+
+    const existingTs = loadPriceTimestamps(serverId);
+    const now = Date.now();
+    const newTs = updatedSealId
+      ? { ...existingTs, [updatedSealId]: now }        // solo el sello que cambió
+      : { ...existingTs, ...Object.fromEntries(        // marca todos los que cambiaron
+          Object.entries(prices)
+            .filter(([id, p]) => existing[id] !== p)
+            .map(([id]) => [id, now])
+        ) };
+
+    const data: GlobalPrices = { timestamp: now, prices, priceTimestamps: newTs };
+    localStorage.setItem(pricesKey(serverId), JSON.stringify(data));
+  } catch (e) { console.error("[storage] saveGlobalPrices:", e); }
+}
+
+/** Guarda un solo precio y actualiza su timestamp — para usar en handlePriceChange */
+export function saveSinglePrice(sealId: string, priceM: number, serverId?: ServerId | null): void {
+  const prices = loadGlobalPrices(serverId);
+  prices[sealId] = priceM;
+  saveGlobalPrices(prices, serverId, sealId);
+}
+
+// ── Price backups ──────────────────────────────────────────────
+
+export function loadPriceBackups(serverId?: ServerId | null): PriceBackup[] {
+  try { const r = localStorage.getItem(backupsKey(serverId)); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+
+export function createPriceBackup(prices: Record<string, number>, serverId?: ServerId | null): void {
+  try {
+    const backups = loadPriceBackups(serverId);
+    if (backups.length > 0 && JSON.stringify(backups[backups.length - 1].prices) === JSON.stringify(prices)) return;
+    backups.push({ timestamp: Date.now(), prices, serverId: serverId ?? undefined });
+    if (backups.length > MAX_BACKUPS) backups.shift();
+    localStorage.setItem(backupsKey(serverId), JSON.stringify(backups));
+  } catch (e) { console.error(e); }
+}
+
+export interface BackupInfo {
+  index: number; timestamp: number; date: string; time: string;
+  hoursAgo: number; daysAgo: number; label: string;
+}
+
+export function getAvailableBackups(serverId?: ServerId | null): BackupInfo[] {
+  const now = Date.now();
+  return loadPriceBackups(serverId).map((b, index) => {
+    const hoursAgo = Math.round((now - b.timestamp) / 3_600_000);
+    const daysAgo  = Math.round((now - b.timestamp) / 86_400_000);
+    const d = new Date(b.timestamp);
+    const label = hoursAgo < 1 ? "Justo ahora" : hoursAgo < 24 ? `${hoursAgo}h atrás` : daysAgo < 7 ? `${daysAgo}d atrás` : `${Math.round(daysAgo / 7)}sem atrás`;
+    return { index, timestamp: b.timestamp, date: d.toLocaleDateString(), time: d.toLocaleTimeString(), hoursAgo, daysAgo, label };
+  });
+}
+
+export function getRecommendedBackups(serverId?: ServerId | null) {
+  const a = getAvailableBackups(serverId);
+  return {
+    day1: a.find(b => b.hoursAgo >= 18 && b.hoursAgo <= 30),
+    day3: a.find(b => b.daysAgo >= 3  && b.daysAgo < 4),
+    day7: a.find(b => b.daysAgo >= 6  && b.daysAgo < 8),
+  };
+}
+
+export function restorePriceBackup(i: number, serverId?: ServerId | null): boolean {
+  try {
+    const backups = loadPriceBackups(serverId);
+    if (i < 0 || i >= backups.length) return false;
+    saveGlobalPrices(backups[i].prices, serverId);
+    return true;
+  } catch { return false; }
+}
+
+export function getBackupDiff(i: number, serverId?: ServerId | null): number {
+  try {
+    const backups = loadPriceBackups(serverId);
+    if (i < 0 || i >= backups.length) return 0;
+    const current = loadGlobalPrices(serverId);
+    return Object.entries(backups[i].prices).filter(([id, p]) => current[id] !== p).length;
+  } catch { return 0; }
+}
+
+// ── Merge ──────────────────────────────────────────────────────
+
 export function mergeStorageToAppData(
-  baseData: SealBase[],
-  userData: Map<string, SealUserData>
+  baseData: SealBase[], userData: Map<string, SealUserData>, globalPrices?: Record<string, number>
 ): AppData {
   return {
-    seals: mergeSealData(baseData, userData),
-    attrProgress: ATTRIBUTES.map(attr => ({
-      attribute: attr,
-      vActual: 0,
-      vMax: 0,
-      progress: 0,
-    })),
+    seals: mergeSealData(baseData, userData, globalPrices ?? {}),
+    attrProgress: ATTRIBUTES.map(attr => ({ attribute: attr, vActual: 0, vMax: 0, progress: 0 })),
     lastUpdated: Date.now(),
   };
 }
 
-/**
- * DEPRECATED: Guarda el estado completo (mantener para tests)
- * Ahora solo guarda user data
- */
-export function saveData(data: AppData): void {
-  const userData = new Map<string, SealUserData>();
-  for (const [name, seal] of Object.entries(data.seals)) {
-    // Usa name como ID si no existe mejor alternativa
-    userData.set(seal.name || name, {
-      sealId: seal.name || name,
-      currentRank: seal.currentRank,
-      priceM: seal.priceM,
-    });
-  }
-  saveUserData(userData);
-}
+// ── Load / Save ────────────────────────────────────────────────
 
-/**
- * DEPRECATED: Carga el estado completo
- * Intenta migrar si viene del formato antiguo
- */
-export function loadData(): AppData | null {
+export function loadData(serverId?: ServerId | null): AppData | null {
   try {
-    // Intenta cargar formato nuevo
-    const baseData = loadBaseData();
-    if (baseData.length > 0) {
-      const userData = loadUserData();
-      return mergeStorageToAppData(baseData, userData);
+    const base = loadBaseData();
+    if (base.length > 0) {
+      return mergeStorageToAppData(base, loadUserData(serverId), loadGlobalPrices(serverId));
     }
-
-    // Fallback: intenta cargar formato antiguo
     const raw = localStorage.getItem(OLD_STORAGE_KEY);
     if (raw) {
-      const old = JSON.parse(raw) as AppData;
-      // Migrar automáticamente
-      const migrated = migrateOldData(old);
-      saveBaseData(migrated.base);
-      saveUserData(migrated.user);
-      return mergeStorageToAppData(migrated.base, migrated.user);
+      const m = migrateOldData(JSON.parse(raw) as AppData);
+      saveBaseData(m.base); saveUserData(m.user, serverId); saveGlobalPrices(m.prices, serverId);
+      return mergeStorageToAppData(m.base, m.user, m.prices);
     }
+    return null;
+  } catch { return null; }
+}
 
-    return null;
-  } catch {
-    return null;
+function migrateOldData(old: AppData) {
+  const base: SealBase[] = [], user = new Map<string, SealUserData>(), prices: Record<string, number> = {};
+  for (const [name, seal] of Object.entries(old.seals)) {
+    const { base: b, user: u } = migrateOldSeal(seal, name);
+    base.push(b); user.set(name, u);
+    if (seal.priceM > 0) prices[name] = seal.priceM;
+  }
+  return { base, user, prices };
+}
+
+export function saveData(data: AppData, serverId?: ServerId | null): void {
+  const userData = new Map<string, SealUserData>();
+  const prices: Record<string, number> = {};
+  for (const [name, seal] of Object.entries(data.seals)) {
+    userData.set(seal.name || name, { sealId: seal.name || name, currentRank: seal.currentRank });
+    if (seal.priceM > 0) prices[seal.name || name] = seal.priceM;
+  }
+  saveUserData(userData, serverId);
+  if (Object.keys(prices).length > 0) saveGlobalPrices(prices, serverId);
+}
+
+export function clearData(serverId?: ServerId | null): void {
+  [STORAGE_KEY_BASE, STORAGE_KEY_USER_LEGACY, STORAGE_KEY_PRICES_LEGACY, STORAGE_KEY_BACKUPS_LEGACY, OLD_STORAGE_KEY]
+    .forEach(k => localStorage.removeItem(k));
+  const servers = serverId ? [serverId] : ["omegamon", "alphamon"] as ServerId[];
+  for (const s of servers) {
+    localStorage.removeItem(userKey(s));
+    localStorage.removeItem(pricesKey(s));
+    localStorage.removeItem(backupsKey(s));
   }
 }
 
-/**
- * Migra AppData antiguo a base + user
- */
-function migrateOldData(oldData: AppData): { base: SealBase[]; user: Map<string, SealUserData> } {
-  const base: SealBase[] = [];
-  const user = new Map<string, SealUserData>();
-
-  for (const [name, seal] of Object.entries(oldData.seals)) {
-    const id = name; // Usa name como ID temporal
-    const { base: b, user: u } = migrateOldSeal(seal, id);
-    base.push(b);
-    user.set(id, u);
-  }
-
-  return { base, user };
-}
-
-// Borra todos los datos guardados
-export function clearData(): void {
-  localStorage.removeItem(STORAGE_KEY_BASE);
-  localStorage.removeItem(STORAGE_KEY_USER);
-  localStorage.removeItem(OLD_STORAGE_KEY);
-}
-
-// Estado inicial vacío para cuando el usuario abre la app por primera vez
 export function emptyAppData(): AppData {
   return {
     seals: {},
-    attrProgress: ATTRIBUTES.map(attr => ({
-      attribute: attr,
-      vActual: 0,
-      vMax: 0,
-      progress: 0,
-    })),
+    attrProgress: ATTRIBUTES.map(attr => ({ attribute: attr, vActual: 0, vMax: 0, progress: 0 })),
     lastUpdated: Date.now(),
   };
 }
 
-/**
- * Carga datos base desde /seals_data.json
- */
-export async function loadDefaultData(): Promise<AppData | null> {
+export async function loadDefaultData(serverId?: ServerId | null): Promise<AppData | null> {
   try {
-    const res = await fetch("/seals_data.json");
-    if (!res.ok) return null;
-    
-    // Espera formato { seals: Seal[] } (antiguo) o { base: SealBase[] }
-    const json = await res.json();
-    
-    // Si tiene "base", usa formato nuevo
+    const json = await fetchServerJson(serverId);
+    if (!json) return null;
     if (json.base && Array.isArray(json.base)) {
       saveBaseData(json.base);
-      const userData = loadUserData();
-      return mergeStorageToAppData(json.base, userData);
+      const prices = json.prices || {};
+      if (Object.keys(prices).length > 0) saveGlobalPrices(prices, serverId);
+      return mergeStorageToAppData(json.base, loadUserData(serverId), prices);
     }
-    
-    // Si tiene "seals", convierte formato antiguo
     if (json.seals) {
-      const appData = json as AppData;
-      const migrated = migrateOldData(appData);
-      saveBaseData(migrated.base);
-      saveUserData(migrated.user);
-      return mergeStorageToAppData(migrated.base, migrated.user);
+      const m = migrateOldData(json as AppData);
+      saveBaseData(m.base); saveUserData(m.user, serverId); saveGlobalPrices(m.prices, serverId);
+      return mergeStorageToAppData(m.base, m.user, m.prices);
     }
-
     return null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-/**
- * SMART IMPORT: Mezcla JSON importado.
- * - Si el sello NO existe en base: lo agrega.
- * - Si el sello YA existe: actualiza currentRank y priceM en userData
- *   solo si el JSON importado trae valores válidos (rank distinto de null/Unopened o precio > 0).
- */
-/**
- * Import strategy options:
- * - "preserve": Keep existing user data, only add new seals (safest)
- * - "update-ranks": Update ranks if incoming is higher, preserve prices
- * - "overwrite": Fully overwrite with imported data (riskiest)
- */
-export type ImportStrategy = "preserve" | "update-ranks" | "overwrite";
+export async function autoUpdateFromJSON(serverId?: ServerId | null): Promise<boolean> {
+  try {
+    const json = await fetchServerJson(serverId);
+    if (!json) return false;
+    const newBase: SealBase[] = json.base && Array.isArray(json.base)
+      ? json.base
+      : json.seals ? Object.values(json.seals as any).map((s: any) => ({ id: s.name || s.id, name: s.name, stats: s.stats, qty: s.qty }))
+      : null;
+    if (!newBase) return false;
+    const jsonPrices: Record<string, number> = json.prices || {};
+    if (json.seals) for (const s of Object.values(json.seals as any)) if ((s as any).priceM > 0) jsonPrices[(s as any).name || (s as any).id] = (s as any).priceM;
+    const hasSavedPrices = Object.keys(loadGlobalPrices(serverId)).length > 0;
+    if (hasSavedPrices) smartImportData(newBase, undefined, undefined, "auto-sync", serverId);
+    else smartImportData(newBase, undefined, jsonPrices, "auto-sync", serverId);
+    return true;
+  } catch (e) { console.error("[storage] autoUpdateFromJSON:", e); return false; }
+}
+
+export type ImportStrategy = "preserve" | "update-ranks" | "overwrite" | "auto-sync";
 
 export function smartImportData(
-  newBaseData: SealBase[],
-  newUserData?: Map<string, SealUserData>,
-  strategy: ImportStrategy = "update-ranks"
+  newBaseData: SealBase[], newUserData?: Map<string, SealUserData>,
+  newPrices?: Record<string, number>, strategy: ImportStrategy = "update-ranks",
+  serverId?: ServerId | null,
 ): void {
   const existingBase = loadBaseData();
   const existingIds  = new Set(existingBase.map(b => b.id));
+  const existingPrices = loadGlobalPrices(serverId);
 
-  // Agregar solo base data nueva (NUNCA sobrescribir base data)
+  if (strategy === "auto-sync") {
+    saveBaseData(existingBase.map(e => { const i = newBaseData.find(b => b.id === e.id); return i ? { ...e, stats: i.stats, qty: i.qty } : e; }));
+  }
   const toAdd = newBaseData.filter(b => !existingIds.has(b.id));
-  if (toAdd.length > 0) {
-    saveBaseData([...existingBase, ...toAdd]);
+  if (toAdd.length > 0) saveBaseData([...(strategy === "auto-sync" ? loadBaseData() : existingBase), ...toAdd]);
+
+  if (newPrices && Object.keys(newPrices).length > 0) {
+    let updated = { ...existingPrices };
+    if (strategy === "preserve")        toAdd.forEach(b => { if (newPrices[b.id] && !updated[b.id]) updated[b.id] = newPrices[b.id]; });
+    else if (strategy === "overwrite")  updated = newPrices;
+    else                                updated = { ...updated, ...newPrices };
+    saveGlobalPrices(updated, serverId);
   }
 
-  // Actualizar user data según estrategia
   if (newUserData && newUserData.size > 0) {
-    const existingUser = loadUserData();
-
+    const existing = loadUserData(serverId);
     for (const [id, incoming] of newUserData.entries()) {
-      const current = existingUser.get(id);
-
-      if (strategy === "preserve") {
-        // Solo agregar si no existe
-        if (!current) {
-          existingUser.set(id, {
-            sealId:      id,
-            currentRank: incoming.currentRank ?? null,
-            priceM:      incoming.priceM ?? 0,
-          });
-        }
-      } else if (strategy === "update-ranks") {
-        // Update rank si incoming es más alto, preservar precios existentes
-        const currentRank = current?.currentRank ?? null;
-        const currentPrice = current?.priceM ?? 0;
-
-        let newRank = currentRank;
-        if (incoming.currentRank && currentRank !== null) {
-          const currentIdx = RANK_ORDER[currentRank];
-          const incomingIdx = RANK_ORDER[incoming.currentRank];
-          if (incomingIdx > currentIdx) {
-            newRank = incoming.currentRank;
-          }
-        } else if (incoming.currentRank && !currentRank) {
-          newRank = incoming.currentRank;
-        }
-
-        existingUser.set(id, {
-          sealId: id,
-          currentRank: newRank,
-          priceM: incoming.priceM > 0 ? incoming.priceM : currentPrice,
-        });
-      } else if (strategy === "overwrite") {
-        // Fully overwrite
-        existingUser.set(id, {
-          sealId:      id,
-          currentRank: incoming.currentRank ?? null,
-          priceM:      incoming.priceM ?? 0,
-        });
-      }
+      const current = existing.get(id);
+      if (strategy === "preserve")      { if (!current) existing.set(id, { sealId: id, currentRank: incoming.currentRank ?? null }); }
+      else if (strategy === "update-ranks") {
+        const cur = current?.currentRank ?? null;
+        let nr = cur;
+        if (incoming.currentRank && (!cur || RANK_ORDER[incoming.currentRank] > RANK_ORDER[cur])) nr = incoming.currentRank;
+        existing.set(id, { sealId: id, currentRank: nr });
+      } else if (strategy === "overwrite") existing.set(id, { sealId: id, currentRank: incoming.currentRank ?? null });
+      else if (strategy === "auto-sync")   existing.set(id, { sealId: id, currentRank: current?.currentRank ?? null });
     }
-
-    saveUserData(existingUser);
+    saveUserData(existing, serverId);
   }
 }
 
-// DEPRECATED — kept for backward compat
-export function smartImportBaseData(newBaseData: SealBase[], strategy: ImportStrategy = "update-ranks"): void {
-  smartImportData(newBaseData, undefined, strategy);
-}
-
-// Crea un sello vacío con todos los campos en 0
-export function emptySeal(name: string) {
+export function emptySeal(name: string): SealBase {
   return {
-    id: name,
-    name,
-    stats: Object.fromEntries(
-      ATTRIBUTES.map(a => [a, Object.fromEntries(RANKS.map(r => [r, 0]))])
-    ) as Record<string, Record<string, number>>,
-    qty: Object.fromEntries(RANKS.map(r => [r, 0])) as Record<string, number>,
-  } as SealBase;
+    id: name, name,
+    stats: Object.fromEntries(ATTRIBUTES.map(a => [a, Object.fromEntries(RANKS.map(r => [r, 0]))])) as any,
+    qty:   Object.fromEntries(RANKS.map(r => [r, 0])) as any,
+  };
 }
 
-// ── Seal Opener Price Settings ──
-
-export function saveOpenerPrice(priceM: number): void {
-  localStorage.setItem(STORAGE_KEY_OPENER_PRICE, String(priceM));
-}
-
-export function loadOpenerPrice(): number {
-  try {
-    const val = localStorage.getItem(STORAGE_KEY_OPENER_PRICE);
-    return val ? parseFloat(val) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-export function saveIncludeOpener(include: boolean): void {
-  localStorage.setItem(STORAGE_KEY_INCLUDE_OPENER, include ? "1" : "0");
-}
-
-export function loadIncludeOpener(): boolean {
-  try {
-    return localStorage.getItem(STORAGE_KEY_INCLUDE_OPENER) === "1";
-  } catch {
-    return false;
-  }
-}
+export function saveOpenerPrice(v: number): void   { localStorage.setItem(STORAGE_KEY_OPENER_PRICE, String(v)); }
+export function loadOpenerPrice(): number           { return parseFloat(localStorage.getItem(STORAGE_KEY_OPENER_PRICE) ?? "0") || 0; }
+export function saveIncludeOpener(v: boolean): void { localStorage.setItem(STORAGE_KEY_INCLUDE_OPENER, v ? "1" : "0"); }
+export function loadIncludeOpener(): boolean        { return localStorage.getItem(STORAGE_KEY_INCLUDE_OPENER) === "1"; }

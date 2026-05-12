@@ -1,252 +1,299 @@
 // ============================================================
-//  App.tsx  —  Componente raíz de la aplicación
+//  App.tsx  —  Raíz DMO
 // ============================================================
 
 import { useState, useEffect, useRef } from "react";
 import { Analytics } from "@vercel/analytics/react";
-import type { AppData, SealBase, SealUserData, Attribute } from "./lib/types";
-import { ATTRIBUTES } from "./lib/types";
+import type { AppData, SealBase, SealUserData, Attribute, Rank } from "./lib/types";
+import { ATTRIBUTES, PERCENT_ATTRS } from "./lib/types";
 import {
-  loadData,
-  clearData,
-  emptyAppData,
-  loadDefaultData,
-  loadBaseData,
-  loadUserData,
-  saveUserData,
-  mergeStorageToAppData,
-  smartImportData,
-  type ImportStrategy,
-  loadOpenerPrice,
-  saveOpenerPrice,
-  loadIncludeOpener,
-  saveIncludeOpener,
+  loadData, clearData, emptyAppData, loadDefaultData,
+  loadBaseData, loadUserData, saveUserData,
+  loadGlobalPrices, saveGlobalPrices, loadPriceTimestamps,
+  mergeStorageToAppData, smartImportData, type ImportStrategy,
+  loadOpenerPrice, saveOpenerPrice, loadIncludeOpener, saveIncludeOpener,
+  autoUpdateFromJSON, getAvailableBackups,
 } from "./lib/storage";
 import { extractUserData } from "./lib/sealMerger";
 import { computeAttrProgress } from "./lib/calculator";
-import { RankingTab } from "./components/RankingTab";
-import { ManageTab } from "./components/ManageTab";
-import { ProgressTab } from "./components/ProgressTab";
-import { BuilderTab } from "./components/BuilderTab";
+import { optimizeBuild, type BuildSolution } from "./lib/optimizer";
+import { calcCandidates } from "./lib/calculator";
+import { RankingTab }       from "./components/RankingTab";
+import { ManageTab }        from "./components/ManageTab";
+import { ProgressTab }      from "./components/ProgressTab";
+import { BuilderTab }       from "./components/BuilderTab";
+import { MarketTab }        from "./components/MarketTab";
+import { PriceBackupModal } from "./components/PriceBackupModal";
+import { ServerSelectorModal, ServerBadge, ChangeServerModal } from "./components/ServerSelector";
+import { getActiveServer, setActiveServer, getServerDef } from "./lib/serverStore";
+import { useServerPrices } from "./lib/useServerPrices";
+import { fetchPricesNDaysAgo, fetchPriceHistory } from "./lib/supabase";
+import type { ServerId } from "./lib/supabase";
 import { TRANSLATIONS, type Lang } from "./lib/i18n";
 
-type Tab = "ranking" | "manage" | "progress" | "builder";
+type Tab = "ranking" | "manage" | "progress" | "builder" | "market";
+type CheckMode = "mark-only" | "update-rank";
 const MAX_HISTORY = 20;
 const LANG_KEY = "izagi-lang";
 
-export default function App() {
-  const [data, setData] = useState<AppData>(emptyAppData());
-  const [tab, setTab] = useState<Tab>("ranking");
-  const [ready, setReady] = useState(false);
-  const [history, setHistory] = useState<AppData[]>([]);
+function MenuItem({ icon, label, onClick, danger, highlight, disabled }: {
+  icon: string; label: string; onClick: () => void;
+  danger?: boolean; highlight?: "gold"; disabled?: boolean;
+}) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-xs font-mono text-left transition-colors disabled:opacity-40 disabled:cursor-not-allowed
+        ${danger ? "text-[#5a8aaa] hover:bg-red-900/30 hover:text-red-400"
+          : highlight === "gold" ? "text-[#ffd700] hover:bg-[#ffd700]/10"
+          : "text-[#5a8aaa] hover:bg-[#1a3f6e]/60 hover:text-white"}`}>
+      <span>{icon}</span><span>{label}</span>
+    </button>
+  );
+}
 
-  // ── Estado persistente por tab ──
-  // RankingTab
+export default function App() {
+  const [data,     setData]     = useState<AppData>(emptyAppData());
+  const [tab,      setTab]      = useState<Tab>("ranking");
+  const [ready,    setReady]    = useState(false);
+  const [history,  setHistory]  = useState<AppData[]>([]);
+  const [showMenu, setShowMenu] = useState(false);
+
+  const [serverId,        setServerId]        = useState<ServerId | null>(() => getActiveServer());
+  const [showServerModal, setShowServerModal] = useState(false);
+
+  const { prices: serverPrices, connected, updatePrice } = useServerPrices(serverId);
+
   const [rankAttr,      setRankAttr]      = useState<Attribute>(ATTRIBUTES[0]);
   const [rankSimple,    setRankSimple]    = useState(false);
   const [rankTopN,      setRankTopN]      = useState(5);
-  // BuilderTab
   const [builderAttr,   setBuilderAttr]   = useState<Attribute>(ATTRIBUTES[0]);
   const [builderTarget, setBuilderTarget] = useState("");
   const [builderSlider, setBuilderSlider] = useState(false);
   const [builderMode,   setBuilderMode]   = useState<"total" | "add">("total");
-  // Global settings
   const [openerPrice,   setOpenerPrice]   = useState(() => loadOpenerPrice());
   const [includeOpener, setIncludeOpener] = useState(() => loadIncludeOpener());
-  // ManageTab
   const [manageSearch,  setManageSearch]  = useState("");
   const [manageFilter,  setManageFilter]  = useState<Attribute | null>(null);
   const [manageSort,    setManageSort]    = useState<"name-asc"|"name-desc"|"stat-desc"|"stat-asc">("name-asc");
-  const [lang, setLang] = useState<Lang>(() =>
-    (localStorage.getItem(LANG_KEY) as Lang | null) ?? "es"
-  );
+  const [lang, setLang] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) as Lang | null) ?? "es");
+  const [priceTimestamps, setPriceTimestamps] = useState<Record<string, number>>(() => loadPriceTimestamps(getActiveServer()));
+
+  const [buildSolution,  setBuildSolution]  = useState<BuildSolution | null>(null);
+  const [activeSolution, setActiveSolution] = useState<"cheapest" | "fewest">("cheapest");
+  const [checkedKeys,    setCheckedKeys]    = useState<Set<string>>(new Set());
+  const [checkMode,      setCheckMode]      = useState<CheckMode>("mark-only");
+
   const [importDialog, setImportDialog] = useState<{
-    show: boolean;
-    baseData?: SealBase[];
-    userData?: Map<string, SealUserData>;
+    show: boolean; baseData?: SealBase[];
+    userData?: Map<string, SealUserData>; prices?: Record<string, number>;
   }>({ show: false });
+  const [isSyncing,      setIsSyncing]      = useState(false);
+  const [showBackups,    setShowBackups]    = useState(false);
+  const [backupRestored, setBackupRestored] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const t = TRANSLATIONS[lang];
-
   const TABS: { key: Tab; label: string }[] = [
     { key: "progress", label: t.tabProgress },
-    { key: "builder", label: t.tabBuilder },
-    { key: "ranking", label: t.tabRanking },
-    { key: "manage", label: t.tabManage },
+    { key: "builder",  label: t.tabBuilder  },
+    { key: "ranking",  label: t.tabRanking  },
+    { key: "manage",   label: t.tabManage   },
+    { key: "market",   label: lang === "es" ? "Mercado" : "Market" },
   ];
 
   useEffect(() => {
+    if (!ready || serverPrices.size === 0) return;
+    setData(prev => {
+      const seals = { ...prev.seals };
+      let changed = false;
+      for (const [id, priceM] of serverPrices.entries()) {
+        if (seals[id] && seals[id].priceM !== priceM) { seals[id] = { ...seals[id], priceM }; changed = true; }
+      }
+      if (!changed) return prev;
+      const next = { ...prev, seals, lastUpdated: Date.now() };
+      return { ...next, attrProgress: computeAttrProgress(next) };
+    });
+  }, [serverPrices, ready]);
+
+  useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { attr: Attribute };
-      setBuilderAttr(detail.attr);
-      setBuilderTarget("");
-      setTab("builder");
+      const { attr } = (e as CustomEvent).detail as { attr: Attribute };
+      setBuilderAttr(attr); setBuilderTarget(""); setTab("builder");
     };
     document.addEventListener("goto-builder", handler);
     return () => document.removeEventListener("goto-builder", handler);
   }, []);
 
   useEffect(() => {
-    const init = async () => {
-      // Cargar datos guardados
-      const saved = loadData();
-      if (saved) {
-        setData({ ...saved, attrProgress: computeAttrProgress(saved) });
+    if (!serverId) return;
+    setReady(false);
+    (async () => {
+      const base = loadBaseData();
+      if (base.length > 0) {
+        const merged = mergeStorageToAppData(base, loadUserData(serverId), loadGlobalPrices(serverId));
+        setData({ ...merged, attrProgress: computeAttrProgress(merged) });
         setReady(true);
+        const ok = await autoUpdateFromJSON(serverId);
+        if (ok) { const r = loadData(serverId); if (r) setData({ ...r, attrProgress: computeAttrProgress(r) }); }
         return;
       }
-
-      // Si no hay datos, cargar datos predeterminados
-      const fallback = await loadDefaultData();
-      if (fallback) {
-        setData({ ...fallback, attrProgress: computeAttrProgress(fallback) });
-      } else {
-        setData(emptyAppData());
-      }
+      const fallback = await loadDefaultData(serverId);
+      setData(fallback ? { ...fallback, attrProgress: computeAttrProgress(fallback) } : emptyAppData());
       setReady(true);
-    };
-    init();
-  }, []);
+    })();
+  }, [serverId]);
 
-  // Guarda en historial ANTES de aplicar el cambio
-  // Ahora solo guarda userData
-  const updateData = (next: AppData) => {
-    setHistory(prev => [...prev.slice(-MAX_HISTORY + 1), data]);
+  useEffect(() => {
+    if (!ready) return;
+    const candidates = calcCandidates(data, builderAttr, includeOpener ? openerPrice : undefined);
+    const progress   = data.attrProgress.find(p => p.attribute === builderAttr);
+    const isPct      = PERCENT_ATTRS.has(builderAttr);
+    const toInternal = (v: number) => isPct ? v / 100 : v;
+    const currentStats   = progress?.vActual ?? 0;
+    const displayTarget  = builderTarget !== "" ? parseFloat(builderTarget) : 0;
+    const internalTarget = toInternal(displayTarget);
+    const targetNeeded   = builderMode === "total" ? Math.max(0, internalTarget - currentStats) : internalTarget;
+    if (targetNeeded <= 0 || candidates.length === 0) { setBuildSolution(null); return; }
+    const solutions = optimizeBuild(candidates, targetNeeded, builderAttr);
+    setBuildSolution(activeSolution === "cheapest" ? solutions.cheapest : solutions.fewest);
+    setCheckedKeys(new Set());
+  }, [data, builderAttr, builderTarget, builderMode, includeOpener, openerPrice, activeSolution, ready]);
+
+  const persist = (next: AppData, updatedSealId?: string): AppData => {
     const withProgress = { ...next, attrProgress: computeAttrProgress(next) };
-    setData(withProgress);
-
-    // NEW: Guardar solo user data
     const userData = new Map<string, SealUserData>();
+    const prices: Record<string, number> = {};
     for (const [name, seal] of Object.entries(next.seals)) {
       userData.set(seal.name || name, extractUserData(seal, seal.name || name));
+      if (seal.priceM > 0) prices[seal.name || name] = seal.priceM;
     }
-    saveUserData(userData);
+    saveUserData(userData, serverId);
+    if (Object.keys(prices).length > 0) saveGlobalPrices(prices, serverId, updatedSealId);
+    return withProgress;
   };
 
+  const updateData = (next: AppData) => {
+    setData(prev => { setHistory(h => [...h.slice(-MAX_HISTORY + 1), prev]); return persist(next); });
+  };
+
+  const handlePriceChange = async (sealId: string, priceM: number) => {
+    const prevPrice = data.seals[sealId]?.priceM;
+    setData(prev => {
+      if (!prev.seals[sealId]) return prev;
+      const next = { ...prev, seals: { ...prev.seals, [sealId]: { ...prev.seals[sealId], priceM } }, lastUpdated: Date.now() };
+      return persist(next, sealId);
+    });
+    setPriceTimestamps(prev => ({ ...prev, [sealId]: Date.now() }));
+    await updatePrice(sealId, priceM, prevPrice);
+  };
+
+  const handleToggleCheck = (key: string, sealName: string, rank: Rank) => {
+    setCheckedKeys(prev => {
+      const next = new Set(prev);
+      const wasChecked = next.has(key);
+      wasChecked ? next.delete(key) : next.add(key);
+      if (!wasChecked && checkMode === "update-rank") {
+        setData(prevData => {
+          if (!prevData.seals[sealName]) return prevData;
+          setHistory(h => [...h.slice(-MAX_HISTORY + 1), prevData]);
+          return persist({ ...prevData, seals: { ...prevData.seals, [sealName]: { ...prevData.seals[sealName], currentRank: rank } }, lastUpdated: Date.now() });
+        });
+      }
+      return next;
+    });
+  };
+
+  const handleClearChecks = () => setCheckedKeys(new Set());
+
   const handleUndo = () => {
-    if (history.length === 0) return;
+    if (!history.length) return;
     const prev = history[history.length - 1];
     setHistory(h => h.slice(0, -1));
-    const withProgress = { ...prev, attrProgress: computeAttrProgress(prev) };
-    setData(withProgress);
-
-    // Guardar user data
-    const userData = new Map<string, SealUserData>();
-    for (const [name, seal] of Object.entries(prev.seals)) {
-      userData.set(seal.name || name, extractUserData(seal, seal.name || name));
-    }
-    saveUserData(userData);
+    setData(persist(prev));
   };
 
   const handleReset = () => {
     if (!confirm(t.confirmReset)) return;
-    clearData();
-    setHistory([]);
-    setData(emptyAppData());
+    clearData(serverId); setHistory([]); setData(emptyAppData()); setCheckedKeys(new Set()); setBuildSolution(null);
+  };
+
+  const handleSync = async () => {
+    setIsSyncing(true);
+    try {
+      const ok = await autoUpdateFromJSON(serverId);
+      if (ok) { const r = loadData(serverId); if (r) updateData(r); alert(lang === "es" ? "✓ Sincronización completada" : "✓ Sync completed"); }
+      else alert(lang === "es" ? "❌ No se pudo sincronizar" : "❌ Could not sync");
+    } finally { setIsSyncing(false); }
+  };
+
+  const handleRestoreBackup = (label: string) => {
+    const r = loadData(serverId);
+    if (r) { updateData(r); setBackupRestored(label); setTimeout(() => setBackupRestored(null), 3000); }
   };
 
   const toggleLang = () => {
     const next: Lang = lang === "es" ? "en" : "es";
-    setLang(next);
-    localStorage.setItem(LANG_KEY, next);
+    setLang(next); localStorage.setItem(LANG_KEY, next);
   };
 
-  // ── Importar JSON ──
-  // SMART IMPORT: agrega sellos nuevos Y actualiza ranks/precios de los existentes
+  const handleSelectServer = (id: ServerId) => {
+    setActiveServer(id); setServerId(id); setShowServerModal(false);
+    setHistory([]); setCheckedKeys(new Set()); setBuildSolution(null);
+    setPriceTimestamps(loadPriceTimestamps(id));
+  };
+
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const parsed = JSON.parse(ev.target?.result as string);
-
-        // ── Formato nuevo: { base: SealBase[] } ──
-        if (parsed.base && Array.isArray(parsed.base)) {
-          const newBase = parsed.base as SealBase[];
-          setImportDialog({ show: true, baseData: newBase });
-          return;
+        const p = JSON.parse(ev.target?.result as string);
+        if (p.base && Array.isArray(p.base)) { setImportDialog({ show: true, baseData: p.base, prices: p.prices }); return; }
+        if (p.seals) {
+          const entries = Object.values(p.seals) as any[];
+          const base = entries.map((s: any) => ({ id: s.name, name: s.name, stats: s.stats, qty: s.qty }));
+          const user = new Map<string, SealUserData>();
+          const prices: Record<string, number> = {};
+          for (const s of entries) { if (s.name) { user.set(s.name, { sealId: s.name, currentRank: s.currentRank ?? null }); if (s.priceM > 0) prices[s.name] = s.priceM; } }
+          setImportDialog({ show: true, baseData: base, userData: user, prices }); return;
         }
-
-        // ── Formato exportado por la app: { seals: Record<string, Seal> } ──
-        if (parsed.seals) {
-          const sealEntries = Object.values(parsed.seals) as any[];
-
-          // Separar base y user data
-          const baseToImport: SealBase[] = sealEntries.map((s: any) => ({
-            id:    s.name,
-            name:  s.name,
-            stats: s.stats,
-            qty:   s.qty,
-          }));
-
-          // Extraer userData (currentRank + priceM) de cada sello exportado
-          const userToImport = new Map<string, SealUserData>();
-          for (const s of sealEntries) {
-            if (s.name) {
-              userToImport.set(s.name, {
-                sealId:      s.name,
-                currentRank: s.currentRank ?? null,
-                priceM:      s.priceM ?? 0,
-              });
-            }
-          }
-
-          setImportDialog({ show: true, baseData: baseToImport, userData: userToImport });
-          return;
-        }
-
-        throw new Error(lang === "es" ? "JSON invalido: falta 'seals' o 'base'" : "Invalid JSON: missing 'seals' or 'base'");
-      } catch (err) {
-        alert(`❌ ${lang === "es" ? "Error al leer el JSON:" : "Error reading JSON:"} ` + (err as Error).message);
-      }
+        throw new Error("JSON inválido");
+      } catch (err) { alert(`❌ ${(err as Error).message}`); }
     };
-    reader.readAsText(file);
-    e.target.value = "";
+    reader.readAsText(file); e.target.value = "";
   };
 
-  // ── Confirmar import con estrategia ──
   const confirmImport = (strategy: ImportStrategy) => {
     if (!importDialog.baseData) return;
-    
-    smartImportData(importDialog.baseData, importDialog.userData, strategy);
-    const merged = mergeStorageToAppData(loadBaseData(), loadUserData());
-    updateData(merged);
-    
-    const sealCount = importDialog.baseData.length;
-    const strategyLabel = lang === "es" 
-      ? strategy === "preserve" ? "sin cambios en ranks existentes"
-        : strategy === "update-ranks" ? "actualizando ranks"
-        : "sobrescribiendo todo"
-      : strategy === "preserve" ? "without changing existing ranks"
-        : strategy === "update-ranks" ? "updating ranks"
-        : "overwriting all";
-    
-    alert(`✅ ${lang === "es" ? "Importados" : "Imported"} ${sealCount} ${lang === "es" ? "sellos" : "seals"} (${strategyLabel})`);
+    smartImportData(importDialog.baseData, importDialog.userData, importDialog.prices, strategy, serverId);
+    updateData(mergeStorageToAppData(loadBaseData(), loadUserData(serverId), loadGlobalPrices(serverId)));
+    alert(`✅ ${importDialog.baseData.length} ${lang === "es" ? "sellos importados" : "seals imported"}`);
     setImportDialog({ show: false });
   };
 
-  // ── Exportar JSON ──
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "seals_data.json";
-    a.click();
+    const a = document.createElement("a"); a.href = url; a.download = "seals_data.json"; a.click();
     URL.revokeObjectURL(url);
   };
 
+  // fetchPricesNDaysAgo / fetchPriceHistory con serverId inyectado
+  const fetchTrendPrices = (days?: number) => fetchPricesNDaysAgo(serverId!, days);
+  const fetchSealHistory  = (sealId: string, days?: number) => fetchPriceHistory(serverId!, sealId, days);
+
+  if (!serverId) return <ServerSelectorModal onSelect={handleSelectServer} lang={lang} />;
   if (!ready) return (
     <div className="flex items-center justify-center min-h-screen">
-      <p className="text-[#00c8f0] font-mono animate-pulse">
-        {lang === "es" ? "Cargando..." : "Loading..."}
-      </p>
+      <p className="text-[#00c8f0] font-mono animate-pulse">{lang === "es" ? "Cargando..." : "Loading..."}</p>
     </div>
   );
 
-  const sealCount = Object.keys(data.seals).length;
+  const sealCount  = Object.keys(data.seals).length;
+  const serverDef  = getServerDef(serverId);
+  const hasBackups = getAvailableBackups(serverId).length > 0;
+  const checkedCount = checkedKeys.size;
+  const totalBuild   = buildSolution?.items.length ?? 0;
 
   return (
     <div className="min-h-screen bg-[#060d18] text-white">
@@ -255,215 +302,124 @@ export default function App() {
           <span className="text-2xl">⚔️</span>
           <div>
             <h1 className="text-lg font-bold tracking-widest uppercase">Seal Optimizer</h1>
-            <p className="text-[#5a8aaa] text-xs font-mono">
-              {sealCount > 0 ? t.sealCount(sealCount) : t.noSeals}
-            </p>
+            <p className="text-[#5a8aaa] text-xs font-mono">{sealCount > 0 ? t.sealCount(sealCount) : t.noSeals}</p>
           </div>
         </div>
-
-        {/* Botones de la barra superior */}
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          <span className="text-[#2a4558] text-xs font-mono hidden md:block mr-2">
-            {t.saved} {new Date(data.lastUpdated).toLocaleTimeString()}
-          </span>
-
-          {/* Idioma */}
-          <button
-            onClick={toggleLang}
-            className="px-3 py-1.5 text-xs font-mono border border-[#6aaccf]/40 text-[#6aaccf] rounded hover:bg-[#6aaccf]/10 transition-colors"
-            title={lang === "es" ? "Switch to English" : "Cambiar a Español"}
-          >
-            🌐 {t.langToggle}
+        <div className="flex items-center gap-2">
+          <ServerBadge serverId={serverId} onChangeServer={() => setShowServerModal(true)} isConnected={connected} lang={lang} />
+          <button onClick={handleUndo} disabled={!history.length}
+            className="px-3 py-1.5 text-xs font-mono border border-[#1a3f6e] text-[#5a8aaa] rounded hover:border-[#00c8f0] hover:text-[#00c8f0] disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            ↩{history.length > 0 && <span className="ml-1 text-[#2a4558]">({history.length})</span>}
           </button>
-
-          {/* Deshacer */}
-          <button
-            onClick={handleUndo}
-            disabled={history.length === 0}
-            title={lang === "es" ? `${history.length} acción(es) en historial` : `${history.length} action(s) in history`}
-            className="px-3 py-1.5 text-xs font-mono border border-[#1a3f6e] text-[#5a8aaa] rounded hover:border-[#00c8f0] hover:text-[#00c8f0] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            {t.undo}
-            {history.length > 0 && (
-              <span className="ml-1 text-[#2a4558]">({history.length})</span>
+          <div className="relative">
+            <button onClick={() => setShowMenu(v => !v)}
+              className={`px-3 py-1.5 text-xs font-mono border rounded transition-colors ${showMenu ? "border-[#00c8f0] text-[#00c8f0]" : "border-[#1a3f6e] text-[#5a8aaa] hover:border-[#00c8f0] hover:text-[#00c8f0]"}`}>
+              ⋯ {lang === "es" ? "Opciones" : "Options"}
+            </button>
+            {showMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-[#09141f] border border-[#1a3f6e] rounded-xl overflow-hidden shadow-xl py-1">
+                  <input ref={fileRef} type="file" accept=".json" onChange={e => { setShowMenu(false); handleImport(e); }} className="hidden" />
+                  <MenuItem icon="📥" label={lang === "es" ? "Importar JSON" : "Import JSON"} onClick={() => { setShowMenu(false); fileRef.current?.click(); }} />
+                  <MenuItem icon="📤" label={lang === "es" ? "Exportar JSON" : "Export JSON"} onClick={() => { setShowMenu(false); handleExport(); }} />
+                  <MenuItem icon="↻" label={isSyncing ? (lang === "es" ? "Sincronizando..." : "Syncing...") : (lang === "es" ? "Sincronizar sellos" : "Sync seals")} disabled={isSyncing} onClick={() => { setShowMenu(false); handleSync(); }} />
+                  {hasBackups && <><div className="border-t border-[#1a3f6e] my-0.5" /><MenuItem icon="📦" label={lang === "es" ? "Ver backups" : "View backups"} highlight="gold" onClick={() => { setShowMenu(false); setShowBackups(true); }} /></>}
+                  <div className="border-t border-[#1a3f6e] my-0.5" />
+                  <MenuItem icon="🌐" label={lang === "es" ? "English" : "Español"} onClick={() => { setShowMenu(false); toggleLang(); }} />
+                  <div className="border-t border-[#1a3f6e] my-0.5" />
+                  <MenuItem icon="🗑" label={lang === "es" ? "Resetear todo" : "Reset all"} danger onClick={() => { setShowMenu(false); handleReset(); }} />
+                </div>
+              </>
             )}
-          </button>
-
-          {/* Importar JSON */}
-          <input ref={fileRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="px-3 py-1.5 text-xs font-mono border border-[#00c8f0] text-[#00c8f0] rounded hover:bg-[#00c8f0]/10 transition-colors"
-          >
-            {t.importJson}
-          </button>
-
-          {/* Exportar JSON */}
-          <button
-            onClick={handleExport}
-            className="px-3 py-1.5 text-xs font-mono border border-[#5a8aaa] text-[#5a8aaa] rounded hover:border-[#00c8f0] hover:text-[#00c8f0] transition-colors"
-          >
-            {t.exportJson}
-          </button>
-
-          {/* Reset total */}
-          <button
-            onClick={handleReset}
-            className="px-3 py-1.5 text-xs font-mono border border-[#1a3f6e] text-[#5a8aaa] rounded hover:border-red-700 hover:text-red-400 transition-colors"
-          >
-            {t.resetAll}
-          </button>
+          </div>
         </div>
       </header>
 
       <nav className="flex border-b border-[#1a3f6e] px-6 bg-[#09141f] overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-5 py-3 text-sm font-semibold tracking-wider uppercase transition-all border-b-2 whitespace-nowrap ${tab === t.key ? "border-[#00c8f0] text-[#00c8f0]" : "border-transparent text-[#5a8aaa] hover:text-white"
-              }`}>
-            {t.label}
+        {TABS.map(tb => (
+          <button key={tb.key} onClick={() => setTab(tb.key)}
+            className={`relative px-5 py-3 text-sm font-semibold tracking-wider uppercase transition-all border-b-2 whitespace-nowrap ${
+              tab === tb.key ? "border-[#00c8f0] text-[#00c8f0]" : "border-transparent text-[#5a8aaa] hover:text-white"
+            }`}>
+            {tb.label}
+            {tb.key === "ranking" && totalBuild > 0 && (
+              <span className={`absolute -top-0.5 -right-0.5 text-[9px] font-bold px-1 rounded-full min-w-[16px] text-center leading-4 ${
+                checkedCount === totalBuild ? "bg-[#00e676] text-black" : "bg-[#00c8f0] text-black"
+              }`}>{checkedCount}/{totalBuild}</span>
+            )}
           </button>
         ))}
       </nav>
 
       <main className="p-6">
-        {/* ── Panel global: Seal Opener ── */}
+        <div className="mb-4 px-4 py-2 rounded-lg border flex items-center gap-3"
+          style={{ borderColor: `${serverDef.color}30`, background: `${serverDef.color}08` }}>
+          <img src={serverDef.logo} alt={serverDef.name} className="w-5 h-5 object-contain" />
+          <span className="font-bold text-xs uppercase tracking-widest" style={{ color: serverDef.color }}>{serverDef.name}</span>
+          <span className="text-[#5a8aaa] text-xs font-mono hidden sm:inline">
+            {lang === "es" ? "— Precios compartidos entre todos los jugadores del servidor" : "— Prices shared among all players on this server"}
+          </span>
+          <span className="ml-auto flex items-center gap-1.5 text-xs font-mono" style={{ color: connected ? "#00e676" : "#5a8aaa" }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? "#00e676" : "#5a8aaa" }} />
+            {connected ? (lang === "es" ? "En vivo" : "Live") : (lang === "es" ? "Conectando..." : "Connecting...")}
+          </span>
+        </div>
+
         {(tab === "ranking" || tab === "builder") && (
           <div className="mb-6 p-3 bg-[#09141f] border border-[#1a3f6e] rounded-xl flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
-              <span className="text-base">📦</span>
+              <span>📦</span>
               <span className="text-white text-xs font-bold font-mono uppercase tracking-wider">Seal Opener</span>
               <span className="text-[#2a4558] text-xs font-mono">({lang === "es" ? "abre 50 sellos c/u" : "opens 50 seals each"})</span>
             </div>
-
-            {/* Toggle */}
-            <div
-              onClick={() => { const n = !includeOpener; setIncludeOpener(n); saveIncludeOpener(n); }}
-              className="flex items-center gap-2 cursor-pointer select-none"
-            >
-              <div className={`w-9 h-5 rounded-full transition-all relative ${
-                includeOpener ? "bg-[#00c8f0]" : "bg-[#1a3f6e]"
-              }`}>
-                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
-                  includeOpener ? "left-[18px]" : "left-0.5"
-                }`} />
+            <div onClick={() => { const n = !includeOpener; setIncludeOpener(n); saveIncludeOpener(n); }} className="flex items-center gap-2 cursor-pointer select-none">
+              <div className={`w-9 h-5 rounded-full transition-all relative ${includeOpener ? "bg-[#00c8f0]" : "bg-[#1a3f6e]"}`}>
+                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${includeOpener ? "left-[18px]" : "left-0.5"}`} />
               </div>
-              <span className="text-xs font-mono text-[#5a8aaa]">
-                {lang === "es" ? "Incluir en costos" : "Include in costs"}
-              </span>
+              <span className="text-xs font-mono text-[#5a8aaa]">{lang === "es" ? "Incluir en costos" : "Include in costs"}</span>
             </div>
-
-            {/* Precio — solo visible cuando el toggle está activo */}
             {includeOpener && (
               <div className="flex items-center gap-2">
-                <span className="text-[#5a8aaa] text-xs font-mono">
-                  {lang === "es" ? "Precio del opener:" : "Opener price:"}
-                </span>
-                <input
-                  type="number"
-                  value={openerPrice || ""}
-                  onChange={e => { const v = parseFloat(e.target.value) || 0; setOpenerPrice(v); saveOpenerPrice(v); }}
-                  placeholder="500"
-                  className="w-24 px-2 py-1 rounded bg-[#0a1520] border border-[#1a3f6e] text-white font-mono text-xs focus:border-[#00c8f0] focus:outline-none"
-                />
+                <span className="text-[#5a8aaa] text-xs font-mono">{lang === "es" ? "Precio opener:" : "Opener price:"}</span>
+                <input type="number" value={openerPrice || ""} onChange={e => { const v = parseFloat(e.target.value) || 0; setOpenerPrice(v); saveOpenerPrice(v); }}
+                  placeholder="500" className="w-24 px-2 py-1 rounded bg-[#0a1520] border border-[#1a3f6e] text-white font-mono text-xs focus:border-[#00c8f0] focus:outline-none" />
                 <span className="text-[#5a8aaa] text-xs font-mono">M</span>
-                {openerPrice > 0 && (
-                  <span className="text-[#00c8f0] text-xs font-mono">
-                    → 1 opener {lang === "es" ? "por cada 50 sellos" : "per 50 seals"}
-                  </span>
-                )}
               </div>
             )}
           </div>
         )}
-        {tab === "ranking" && <RankingTab data={data} lang={lang}
-          selectedAttr={rankAttr} onAttrChange={setRankAttr}
-          simpleMode={rankSimple} onSimpleModeChange={setRankSimple}
-          topN={rankTopN} onTopNChange={setRankTopN}
-          openerPrice={openerPrice} includeOpener={includeOpener}
-        />}
-        {tab === "manage" && <ManageTab data={data} onUpdate={updateData} lang={lang}
-          search={manageSearch} onSearchChange={setManageSearch}
-          attrFilter={manageFilter} onAttrFilterChange={setManageFilter}
-          sortKey={manageSort} onSortKeyChange={setManageSort}
-        />}
+
+        {tab === "ranking" && <RankingTab data={data} lang={lang} selectedAttr={rankAttr} onAttrChange={setRankAttr} simpleMode={rankSimple} onSimpleModeChange={setRankSimple} topN={rankTopN} onTopNChange={setRankTopN} openerPrice={openerPrice} includeOpener={includeOpener} buildSolution={buildSolution} checkedKeys={checkedKeys} checkMode={checkMode} onCheckModeChange={setCheckMode} onToggleCheck={handleToggleCheck} onClearChecks={handleClearChecks} />}
+        {tab === "manage"   && <ManageTab data={data} onUpdate={updateData} onPriceChange={handlePriceChange} lang={lang} search={manageSearch} onSearchChange={setManageSearch} attrFilter={manageFilter} onAttrFilterChange={setManageFilter} sortKey={manageSort} onSortKeyChange={setManageSort} priceTimestamps={priceTimestamps} />}
         {tab === "progress" && <ProgressTab data={data} onUpdate={updateData} lang={lang} />}
-        {tab === "builder" && <BuilderTab data={data} lang={lang}
-          selectedAttr={builderAttr} onAttrChange={setBuilderAttr}
-          targetStat={builderTarget} onTargetStatChange={setBuilderTarget}
-          useSlider={builderSlider} onUseSliderChange={setBuilderSlider}
-          builderMode={builderMode} onBuilderModeChange={setBuilderMode}
-          openerPrice={openerPrice} includeOpener={includeOpener}
-        />}
+        {tab === "builder"  && <BuilderTab data={data} lang={lang} selectedAttr={builderAttr} onAttrChange={attr => { setBuilderAttr(attr); setBuilderTarget(""); setCheckedKeys(new Set()); }} targetStat={builderTarget} onTargetStatChange={setBuilderTarget} useSlider={builderSlider} onUseSliderChange={setBuilderSlider} builderMode={builderMode} onBuilderModeChange={setBuilderMode} openerPrice={openerPrice} includeOpener={includeOpener} checkedKeys={checkedKeys} checkMode={checkMode} activeSolution={activeSolution} onActiveSolutionChange={s => { setActiveSolution(s); setCheckedKeys(new Set()); }} onToggleCheck={handleToggleCheck} onClearChecks={handleClearChecks} onCheckModeChange={setCheckMode} />}
+        {tab === "market"   && <MarketTab data={data} lang={lang} fetchPricesNDaysAgo={fetchTrendPrices} fetchPriceHistory={fetchSealHistory} />}
       </main>
 
-      {/* ── Modal de estrategia de import ── */}
+      {showServerModal && <ChangeServerModal currentServer={serverId} onSelect={handleSelectServer} onClose={() => setShowServerModal(false)} lang={lang} />}
+
       {importDialog.show && importDialog.baseData && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-[#09141f] border border-[#1a3f6e] rounded-lg p-6 max-w-md w-full">
-            <h2 className="text-lg font-bold text-[#00c8f0] mb-4">
-              {lang === "es" ? "Estrategia de Import" : "Import Strategy"}
-            </h2>
-            <p className="text-[#5a8aaa] text-sm font-mono mb-6">
-              {lang === "es" 
-                ? `Se importarán ${importDialog.baseData.length} sellos. ¿Cómo deseas actualizar los ranks existentes?`
-                : `Will import ${importDialog.baseData.length} seals. How do you want to update existing ranks?`}
-            </p>
-
+            <h2 className="text-lg font-bold text-[#00c8f0] mb-4">{lang === "es" ? "Estrategia de Import" : "Import Strategy"}</h2>
+            <p className="text-[#5a8aaa] text-sm font-mono mb-6">{lang === "es" ? `${importDialog.baseData.length} sellos a importar` : `${importDialog.baseData.length} seals to import`}</p>
             <div className="space-y-2 mb-6">
-              {/* Option 1: Preserve */}
-              <button
-                onClick={() => confirmImport("preserve")}
-                className="w-full p-3 rounded-lg border border-[#1a3f6e] text-left hover:border-[#ffd700] hover:bg-[#ffd700]/10 transition-all"
-              >
-                <div className="font-bold text-[#ffd700]">
-                  {lang === "es" ? "🔒 Preservar totalmente" : "🔒 Fully Preserve"}
-                </div>
-                <div className="text-xs text-[#5a8aaa] mt-1">
-                  {lang === "es" 
-                    ? "Solo agregar sellos nuevos, sin cambiar ranks existentes"
-                    : "Only add new seals, don't change existing ranks"}
-                </div>
-              </button>
-
-              {/* Option 2: Update Ranks (DEFAULT) */}
-              <button
-                onClick={() => confirmImport("update-ranks")}
-                className="w-full p-3 rounded-lg border border-[#00c8f0] text-left hover:border-[#00c8f0] hover:bg-[#00c8f0]/10 transition-all bg-[#00c8f0]/5"
-              >
-                <div className="font-bold text-[#00c8f0]">
-                  {lang === "es" ? "📈 Actualizar ranks (Recomendado)" : "📈 Update Ranks (Recommended)"}
-                </div>
-                <div className="text-xs text-[#5a8aaa] mt-1">
-                  {lang === "es" 
-                    ? "Subir a ranks más altos, conservar precios existentes"
-                    : "Upgrade to higher ranks, keep existing prices"}
-                </div>
-              </button>
-
-              {/* Option 3: Overwrite */}
-              <button
-                onClick={() => confirmImport("overwrite")}
-                className="w-full p-3 rounded-lg border border-[#1a3f6e] text-left hover:border-red-400 hover:bg-red-400/10 transition-all"
-              >
-                <div className="font-bold text-red-400">
-                  {lang === "es" ? "⚠️ Sobrescribir todo" : "⚠️ Overwrite All"}
-                </div>
-                <div className="text-xs text-[#5a8aaa] mt-1">
-                  {lang === "es" 
-                    ? "Reemplazar todos los ranks y precios importados"
-                    : "Replace all ranks and prices with imported data"}
-                </div>
-              </button>
+              <button onClick={() => confirmImport("preserve")} className="w-full p-3 rounded-lg border border-[#1a3f6e] text-left hover:border-[#ffd700] hover:bg-[#ffd700]/10 transition-all"><div className="font-bold text-[#ffd700]">🔒 {lang === "es" ? "Preservar" : "Preserve"}</div><div className="text-xs text-[#5a8aaa] mt-1">{lang === "es" ? "Solo agregar sellos nuevos" : "Only add new seals"}</div></button>
+              <button onClick={() => confirmImport("update-ranks")} className="w-full p-3 rounded-lg border border-[#00c8f0] bg-[#00c8f0]/5 text-left hover:bg-[#00c8f0]/10 transition-all"><div className="font-bold text-[#00c8f0]">📈 {lang === "es" ? "Actualizar ranks (Recomendado)" : "Update Ranks (Recommended)"}</div><div className="text-xs text-[#5a8aaa] mt-1">{lang === "es" ? "Subir ranks, conservar precios" : "Upgrade ranks, keep prices"}</div></button>
+              <button onClick={() => confirmImport("auto-sync")} className="w-full p-3 rounded-lg border border-[#1a3f6e] text-left hover:border-[#6aaccf] hover:bg-[#6aaccf]/10 transition-all"><div className="font-bold text-[#6aaccf]">🔄 Auto-sync</div><div className="text-xs text-[#5a8aaa] mt-1">{lang === "es" ? "Actualizar stats/precios, preservar tu rank" : "Update stats/prices, preserve rank"}</div></button>
+              <button onClick={() => confirmImport("overwrite")} className="w-full p-3 rounded-lg border border-[#1a3f6e] text-left hover:border-red-400 hover:bg-red-400/10 transition-all"><div className="font-bold text-red-400">⚠️ {lang === "es" ? "Sobrescribir todo" : "Overwrite All"}</div><div className="text-xs text-[#5a8aaa] mt-1">{lang === "es" ? "Reemplazar todo" : "Replace everything"}</div></button>
             </div>
-
-            <button
-              onClick={() => setImportDialog({ show: false })}
-              className="w-full p-2 border border-[#1a3f6e] text-[#5a8aaa] rounded-lg hover:text-white transition-colors text-sm"
-            >
-              {lang === "es" ? "Cancelar" : "Cancel"}
-            </button>
+            <button onClick={() => setImportDialog({ show: false })} className="w-full p-2 border border-[#1a3f6e] text-[#5a8aaa] rounded-lg hover:text-white transition-colors text-sm">{lang === "es" ? "Cancelar" : "Cancel"}</button>
           </div>
+        </div>
+      )}
+
+      <PriceBackupModal isOpen={showBackups} onClose={() => setShowBackups(false)} onRestore={handleRestoreBackup} lang={lang} serverId={serverId} />
+
+      {backupRestored && (
+        <div className="fixed bottom-6 left-6 bg-[#0a8a54] border border-[#00c8f0] rounded-lg p-3 text-sm text-white font-mono z-40">
+          ✓ {lang === "es" ? "Precios restaurados desde" : "Prices restored from"} {backupRestored}
         </div>
       )}
 

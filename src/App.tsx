@@ -30,6 +30,7 @@ import { useServerPrices } from "./lib/useServerPrices";
 import { fetchPricesNDaysAgo, fetchPriceHistory } from "./lib/supabase";
 import type { ServerId } from "./lib/supabase";
 import { TRANSLATIONS, type Lang } from "./lib/i18n";
+import { SyncQRModal } from "./components/SyncQR";
 
 type Tab = "ranking" | "manage" | "progress" | "builder" | "market";
 type CheckMode = "mark-only" | "update-rank";
@@ -89,6 +90,7 @@ export default function App() {
   }>({ show: false });
   const [isSyncing,      setIsSyncing]      = useState(false);
   const [showBackups,    setShowBackups]    = useState(false);
+  const [showSyncQR,     setShowSyncQR]     = useState(false);
   const [backupRestored, setBackupRestored] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -133,7 +135,7 @@ export default function App() {
 
   useEffect(() => {
     if (!serverId) return;
-    migrateLegacyUserDataIfNeeded(serverId);  // Migra datos legacy si es la primera vez en este servidor
+    migrateLegacyUserDataIfNeeded(serverId);
     setReady(false);
     (async () => {
       const base = loadBaseData();
@@ -234,6 +236,18 @@ export default function App() {
     } finally { setIsSyncing(false); }
   };
 
+  const handleQRImport = (userData: Map<string, SealUserData>, _fromServerId: ServerId) => {
+    setData(prev => {
+      const seals = { ...prev.seals };
+      for (const [id, u] of userData.entries()) {
+        if (seals[id]) seals[id] = { ...seals[id], currentRank: u.currentRank };
+      }
+      const next = { ...prev, seals, lastUpdated: Date.now() };
+      return persist(next);
+    });
+    setShowSyncQR(false);
+  };
+
   const handleRestoreBackup = (label: string) => {
     const r = loadData(serverId);
     if (r) { updateData(r); setBackupRestored(label); setTimeout(() => setBackupRestored(null), 3000); }
@@ -286,7 +300,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // fetchPricesNDaysAgo / fetchPriceHistory con serverId inyectado
   const fetchTrendPrices = (days?: number) => fetchPricesNDaysAgo(serverId!, days);
   const fetchSealHistory  = (sealId: string, days?: number) => fetchPriceHistory(serverId!, sealId, days);
 
@@ -332,6 +345,7 @@ export default function App() {
                   <MenuItem icon="📥" label={lang === "es" ? "Importar JSON" : "Import JSON"} onClick={() => { setShowMenu(false); fileRef.current?.click(); }} />
                   <MenuItem icon="📤" label={lang === "es" ? "Exportar JSON" : "Export JSON"} onClick={() => { setShowMenu(false); handleExport(); }} />
                   <MenuItem icon="↻" label={isSyncing ? (lang === "es" ? "Sincronizando..." : "Syncing...") : (lang === "es" ? "Sincronizar sellos" : "Sync seals")} disabled={isSyncing} onClick={() => { setShowMenu(false); handleSync(); }} />
+                  <MenuItem icon="📱" label={lang === "es" ? "Sincronizar con cel" : "Sync with mobile"} onClick={() => { setShowMenu(false); setShowSyncQR(true); }} />
                   {hasBackups && <><div className="border-t border-[#1a3f6e] my-0.5" /><MenuItem icon="📦" label={lang === "es" ? "Ver backups" : "View backups"} highlight="gold" onClick={() => { setShowMenu(false); setShowBackups(true); }} /></>}
                   <div className="border-t border-[#1a3f6e] my-0.5" />
                   <MenuItem icon="🌐" label={lang === "es" ? "English" : "Español"} onClick={() => { setShowMenu(false); toggleLang(); }} />
@@ -429,6 +443,16 @@ export default function App() {
         <div className="fixed bottom-6 left-6 bg-[#0a8a54] border border-[#00c8f0] rounded-lg p-3 text-sm text-white font-mono z-40">
           ✓ {lang === "es" ? "Precios restaurados desde" : "Prices restored from"} {backupRestored}
         </div>
+      )}
+
+      {showSyncQR && serverId && (
+        <SyncQRModal
+          data={data}
+          serverId={serverId}
+          lang={lang}
+          onImport={handleQRImport}
+          onClose={() => setShowSyncQR(false)}
+        />
       )}
 
       <Analytics />

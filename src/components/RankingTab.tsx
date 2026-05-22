@@ -33,8 +33,8 @@ interface Props {
   onPriceChange?: (sealId: string, priceM: number) => void;
 }
 
-function InlinePriceEdit({ sealName, currentPrice, onSave, lang }: {
-  sealName: string; currentPrice: number; onSave: (price: number) => void; lang: Lang;
+function InlinePriceEdit({ currentPrice, onSave, lang }: {
+  currentPrice: number; onSave: (price: number) => void; lang: Lang;
 }) {
   const [open,  setOpen]  = useState(false);
   const [value, setValue] = useState(String(currentPrice || ""));
@@ -198,7 +198,7 @@ function SimpleModeContent({ candidates, progress, selectedAttr, isPct, lang, t,
                 <p className="text-[#00c8f0] font-bold text-lg">{c.fTotal}</p>
                 <div className="flex items-center justify-end gap-1">
                   <p className="text-[#2a4558] text-xs font-mono">{formatM(currentPrice)}/{lang === "es" ? "sello" : "seal"}</p>
-                  {onPriceChange && <InlinePriceEdit sealName={c.name} currentPrice={currentPrice} onSave={v => onPriceChange(c.name, v)} lang={lang} />}
+                  {onPriceChange && <InlinePriceEdit currentPrice={currentPrice} onSave={v => onPriceChange(c.name, v)} lang={lang} />}
                 </div>
               </div>
             </div>
@@ -278,7 +278,7 @@ function CandidateRow({ c, i, attr, isPct, inBuild, isDone, checkMode, onToggle,
       <td className="px-4 py-3 text-right font-mono text-[#7ab0cc]">
         <span className="flex items-center justify-end gap-1">
           {formatM(currentPrice)}
-          {onPriceChange && <InlinePriceEdit sealName={c.name} currentPrice={currentPrice} onSave={onPriceChange} lang={lang} />}
+          {onPriceChange && <InlinePriceEdit currentPrice={currentPrice} onSave={onPriceChange} lang={lang} />}
         </span>
       </td>
       <td className="px-4 py-3 text-right font-mono text-[#7ab0cc]">{c.qty.toLocaleString()}</td>

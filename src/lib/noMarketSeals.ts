@@ -113,22 +113,9 @@ export const DMO_NO_MARKET_SEALS = new Set<string>([
   "Scorching Summer CT Seal",
   "Scorching Summer HT Seal",
 
-  // ── [Awaken] ─────────────────────────────────────────────
-  "[Awaken] Gallantmon",
-  "[Awaken] Gallantmon Crimson Mode",
-  "[Awaken] ImperialDramon Paladinmode",
-  "[Awaken] Ordinemon",
-  "[Awaken] SaintGalgomon",
-  "[Awaken] Sakuyamon",
-  "[Awaken] Susanoomon",
-  "[Awaken] ZeedMillenniumon",
+  // ── [Awaken]: tienen mercado activo, se permiten editar precio
 
-  // ── Tamer Seals (cash/temporada — ya no comprables,
-  //    pero pueden aparecer vendidos por jugadores) ─────────
-  "Tamer Seal: Patamon T.K.",
-  "Tamer Seal: Princess Mimi",
-  "Tamer Seal: Matt",
-  "Tamer Seal: Gatomon Hikari",
+  // ── Tamer Seals: se permiten editar precio (aparecen en market de jugadores)
 
   // ── Eventos / misceláneos ────────────────────────────────
   "Armor Seal",

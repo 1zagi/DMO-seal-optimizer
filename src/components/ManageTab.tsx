@@ -102,8 +102,8 @@ function PriceModal({ seal, onSave, onClose, lang, priceTs }: {
             <span className="text-sm">🌐</span>
             <p className="text-[#ffd700] text-xs font-mono leading-relaxed">
               {lang === "es"
-                ? "Este precio es GLOBAL — lo verán todos los jugadores del servidor. Refleja el precio actual del mercado."
-                : "This price is GLOBAL — all players on the server will see it. It reflects the current market price."}
+                ? "¿El precio no corresponde al mercado actual? Corrígelo aquí — todos los jugadores del servidor verán el cambio."
+                : "Price doesn't match the current market? Fix it here — all players on the server will see the update."}
             </p>
           </div>
           {priceTs && (
@@ -356,8 +356,8 @@ export function ManageTab({
                     }`}
                     title={noMarket
                       ? (lang === "es" ? "Sello de evento — sin mercado activo" : "Event seal — no active market")
-                      : (lang === "es" ? "Precio global del servidor" : "Server-wide market price")}>
-                    {noMarket ? "🎫" : "🌐"} {lang === "es" ? "Precio" : "Price"}
+                      : (lang === "es" ? "¿El precio se ve mal? Tócalo para corregirlo" : "Price look wrong? Tap to fix it")}>
+                    {noMarket ? "🎫" : (seal.priceM > 0 ? (lang === "es" ? "¿Precio mal?" : "Wrong price?") : (lang === "es" ? "+ Precio" : "+ Price"))}
                   </button>
                   <button onClick={() => deleteSeal(seal.name)}
                     className="px-2 py-1 text-[10px] font-mono text-[#2a4558] rounded border border-[#1a3f6e] hover:text-red-400 hover:border-red-400/40 transition-all">

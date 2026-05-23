@@ -156,7 +156,9 @@ export async function fetchPricesNDaysAgo(
   days = 7,
 ): Promise<Map<string, number>> {
   try {
-    const since  = new Date(Date.now() - (days + 1) * 86_400_000).toISOString();
+    // Busca el precio más reciente registrado ANTES de hace N días
+    // Ventana amplia: desde hace 60 días hasta hace N-1 días
+    const since  = new Date(Date.now() - 60 * 86_400_000).toISOString();
     const before = new Date(Date.now() - (days - 1) * 86_400_000).toISOString();
     const url = `${SUPABASE_URL}seal_price_history`
       + `?server_id=eq.${serverId}`
@@ -164,7 +166,7 @@ export async function fetchPricesNDaysAgo(
       + `&recorded_at=lte.${before}`
       + `&select=seal_id,price_m,recorded_at`
       + `&order=recorded_at.desc`
-      + `&limit=2000`;
+      + `&limit=5000`;
     const res = await fetch(url, { headers: headersInsert() });
     if (!res.ok) throw new Error(await res.text());
     const rows = (await res.json()) as { seal_id: string; price_m: number }[];

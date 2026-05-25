@@ -138,38 +138,24 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
   }, [data, serverId]);
 
   // ── Leer QR desde imagen ──────────────────────────────────
-  const handleImageFile = (file: File) => {
+  const handleImageFile = async (file: File) => {
     setScanError("");
     setScanResult(null);
-
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-
-      // Intentar leer con BarcodeDetector (Chrome/Android nativo)
-      if ("BarcodeDetector" in window) {
-        const detector = new (window as any).BarcodeDetector({ formats: ["qr_code"] });
-        detector.detect(canvas)
-          .then((codes: any[]) => {
-            if (codes.length === 0) { setScanError(t.error); return; }
-            processQRText(codes[0].rawValue);
-          })
-          .catch(() => setScanError(t.error));
-      } else {
-        // Fallback: pedir texto manual (no hay jsQR disponible sin npm)
-        setScanError("⚠️ " + (lang === "es"
-          ? "Tu navegador no soporta lectura de QR automática. Usa la opción de texto manual."
-          : "Your browser doesn't support automatic QR reading. Use the manual text option."));
-      }
-    };
-    img.onerror = () => setScanError(t.error);
-    img.src = url;
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("https://api.qrserver.com/v1/read-qr-code/", {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) { setScanError(t.error); return; }
+      const json = await res.json() as { symbol: { data: string | null }[] }[];
+      const text = json?.[0]?.symbol?.[0]?.data;
+      if (!text) { setScanError(t.error); return; }
+      processQRText(text);
+    } catch {
+      setScanError(t.error);
+    }
   };
 
   const processQRText = (raw: string) => {

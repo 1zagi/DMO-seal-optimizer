@@ -1,47 +1,25 @@
 // ============================================================
 //  SyncQR.tsx  —  Sincronización PC ↔ Cel via QR
-//
-//  ¿Qué codifica el QR?
-//  Solo los ranks personales (SealUserData) — los precios ya
-//  están en Supabase, la base data viene del JSON del servidor.
-//  Formato: { v:1, s: ServerId, r: {sealId: rankIndex} }
-//  Usando índice numérico de rank (0-6) para ahorrar espacio.
-//
-//  Flujo:
-//    PC  → muestra QR  → cel escanea → importa ranks
-//    CEL → muestra QR  → PC escanea  → importa ranks
+//  Lector de cámara en tiempo real + carga de imagen
 // ============================================================
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { AppData, SealUserData } from "../lib/types";
 import { RANKS, RANK_ORDER } from "../lib/types";
 import type { ServerId } from "../lib/supabase";
 import type { Lang } from "../lib/i18n";
 
-// ── QR generator (sin dependencias externas — puro canvas) ───
-
-// Usamos la API de QR vía Google Charts como fallback ligero,
-// pero con detección de jsQR para el scanner del cel.
 const QR_API = (data: string, size = 280) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}&ecc=M&margin=2`;
 
-// ── Codificación compacta ─────────────────────────────────────
-
-interface QRPayload {
-  v: 1;
-  s: ServerId;
-  r: Record<string, number>; // sealId → RANKS index (0-6), omite null/Unopened
-}
+interface QRPayload { v: 1; s: ServerId; r: Record<string, number>; }
 
 function encodeRanks(userData: Map<string, SealUserData>, serverId: ServerId): string {
   const r: Record<string, number> = {};
   for (const [id, u] of userData.entries()) {
-    if (u.currentRank && u.currentRank !== "Unopened") {
-      r[id] = RANK_ORDER[u.currentRank];
-    }
+    if (u.currentRank && u.currentRank !== "Unopened") r[id] = RANK_ORDER[u.currentRank];
   }
-  const payload: QRPayload = { v: 1, s: serverId, r };
-  return JSON.stringify(payload);
+  return JSON.stringify({ v: 1, s: serverId, r } as QRPayload);
 }
 
 function decodeRanks(raw: string): { serverId: ServerId; userData: Map<string, SealUserData> } | null {
@@ -49,79 +27,63 @@ function decodeRanks(raw: string): { serverId: ServerId; userData: Map<string, S
     const p = JSON.parse(raw) as QRPayload;
     if (p.v !== 1 || !p.s || !p.r) return null;
     const userData = new Map<string, SealUserData>();
-    for (const [id, idx] of Object.entries(p.r)) {
-      const rank = RANKS[idx] ?? null;
-      userData.set(id, { sealId: id, currentRank: rank });
-    }
+    for (const [id, idx] of Object.entries(p.r))
+      userData.set(id, { sealId: id, currentRank: RANKS[idx] ?? null });
     return { serverId: p.s as ServerId, userData };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// ── Props ─────────────────────────────────────────────────────
-
 interface Props {
-  data: AppData;
-  serverId: ServerId;
-  lang: Lang;
+  data: AppData; serverId: ServerId; lang: Lang;
   onImport: (userData: Map<string, SealUserData>, serverId: ServerId) => void;
   onClose: () => void;
 }
 
-// ── Componente principal ──────────────────────────────────────
-
 export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) {
-  const [mode, setMode] = useState<"show" | "scan">("show");
-  const [qrUrl, setQrUrl] = useState<string>("");
-  const [sealCount, setSealCount] = useState(0);
+  const [mode,       setMode]       = useState<"show" | "scan">("show");
+  const [qrUrl,      setQrUrl]      = useState("");
+  const [sealCount,  setSealCount]  = useState(0);
   const [scanResult, setScanResult] = useState<{ serverId: ServerId; count: number } | null>(null);
-  const [scanError, setScanError] = useState<string>("");
-  const [importing, setImporting] = useState(false);
-  const [imported, setImported] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [scanError,  setScanError]  = useState("");
+  const [importing,  setImporting]  = useState(false);
+  const [imported,   setImported]   = useState(false);
+  const [camActive,  setCamActive]  = useState(false);
+  const [camError,   setCamError]   = useState("");
+  const [scanning,   setScanning]   = useState(false);
 
-  const t = lang === "es" ? {
-    title: "Sincronizar con celular",
-    showQR: "Mostrar QR",
-    scanQR: "Escanear QR",
-    showDesc: "Escanea este QR desde tu celular para importar tus ranks.",
-    scanDesc: "Toma una captura del QR desde tu cel y cárgala aquí.",
-    loadImg: "Cargar imagen del QR",
-    orManual: "O pega el texto del QR manualmente:",
-    manual: "Pegar texto JSON...",
-    import: "Importar ranks",
-    importing: "Importando...",
-    imported: "¡Ranks importados!",
-    seals: "sellos con rank",
-    server: "Servidor",
-    wrongServer: "El QR es de otro servidor. ¿Importar de todos modos?",
-    noRanks: "No hay ranks que exportar aún.",
-    error: "QR inválido — no se pudo leer.",
-    close: "Cerrar",
-    tip: "💡 Solo se sincronizan los ranks (datos personales). Los precios ya están en la nube.",
-  } : {
-    title: "Sync with mobile",
-    showQR: "Show QR",
-    scanQR: "Scan QR",
-    showDesc: "Scan this QR from your phone to import your ranks.",
-    scanDesc: "Take a screenshot of the QR from your phone and load it here.",
-    loadImg: "Load QR image",
-    orManual: "Or paste the QR text manually:",
-    manual: "Paste JSON text...",
-    import: "Import ranks",
-    importing: "Importing...",
-    imported: "Ranks imported!",
-    seals: "seals with rank",
-    server: "Server",
-    wrongServer: "QR is from a different server. Import anyway?",
-    noRanks: "No ranks to export yet.",
-    error: "Invalid QR — could not read.",
-    close: "Close",
-    tip: "💡 Only ranks (personal data) are synced. Prices are already in the cloud.",
+  const fileRef    = useRef<HTMLInputElement>(null);
+  const videoRef   = useRef<HTMLVideoElement>(null);
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const streamRef  = useRef<MediaStream | null>(null);
+  const rafRef     = useRef<number>(0);
+  const foundRef   = useRef(false);
+
+  const es = lang === "es";
+  const t = {
+    title:      es ? "Sincronizar con celular"    : "Sync with mobile",
+    showQR:     es ? "Mostrar QR"                 : "Show QR",
+    scanQR:     es ? "Escanear QR"                : "Scan QR",
+    showDesc:   es ? "Escanea este QR desde tu celular para importar tus ranks." : "Scan this QR from your phone to import your ranks.",
+    scanDesc:   es ? "Usa la cámara o carga una imagen del QR." : "Use the camera or load a QR image.",
+    openCam:    es ? "Abrir cámara"               : "Open camera",
+    closeCam:   es ? "Cerrar cámara"              : "Close camera",
+    loadImg:    es ? "Cargar imagen del QR"        : "Load QR image",
+    orManual:   es ? "O pega el texto manualmente:" : "Or paste text manually:",
+    manual:     es ? "Pegar texto JSON..."         : "Paste JSON text...",
+    import:     es ? "Importar ranks"              : "Import ranks",
+    importing:  es ? "Importando..."               : "Importing...",
+    imported:   es ? "¡Ranks importados!"          : "Ranks imported!",
+    seals:      es ? "sellos con rank"             : "seals with rank",
+    server:     es ? "Servidor"                    : "Server",
+    wrongServer:es ? "El QR es de otro servidor. ¿Importar de todos modos?" : "QR is from a different server. Import anyway?",
+    noRanks:    es ? "No hay ranks que exportar aún." : "No ranks to export yet.",
+    error:      es ? "QR inválido — no se pudo leer." : "Invalid QR — could not read.",
+    camError:   es ? "No se pudo acceder a la cámara." : "Could not access camera.",
+    scanning:   es ? "Buscando QR..."              : "Looking for QR...",
+    tip:        es ? "💡 Solo se sincronizan los ranks. Los precios ya están en la nube." : "💡 Only ranks are synced. Prices are already in the cloud.",
   };
 
-  // Generar QR al abrir
+  // ── Generar QR ───────────────────────────────────────────
   useEffect(() => {
     const userData = new Map<string, SealUserData>();
     let count = 0;
@@ -133,37 +95,108 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
     }
     setSealCount(count);
     if (count === 0) { setQrUrl(""); return; }
-    const encoded = encodeRanks(userData, serverId);
-    setQrUrl(QR_API(encoded));
+    setQrUrl(QR_API(encodeRanks(userData, serverId)));
   }, [data, serverId]);
+
+  // ── Detener cámara al desmontar ───────────────────────────
+  useEffect(() => {
+    return () => stopCamera();
+  }, []);
+
+  const stopCamera = () => {
+    cancelAnimationFrame(rafRef.current);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setCamActive(false);
+    setScanning(false);
+    foundRef.current = false;
+  };
+
+  // ── Leer frame de la cámara ───────────────────────────────
+  const scanFrame = useCallback(async () => {
+    if (foundRef.current) return;
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) {
+      rafRef.current = requestAnimationFrame(scanFrame);
+      return;
+    }
+
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")!.drawImage(video, 0, 0);
+
+    // Intentar BarcodeDetector primero (nativo, sin red)
+    if ("BarcodeDetector" in window) {
+      try {
+        const detector = new (window as any).BarcodeDetector({ formats: ["qr_code"] });
+        const codes = await detector.detect(canvas);
+        if (codes.length > 0) { foundRef.current = true; processQRText(codes[0].rawValue); return; }
+      } catch {}
+    } else {
+      // Fallback: enviar frame al API cada ~1s para no saturar
+      try {
+        await new Promise(r => setTimeout(r, 800));
+        canvas.toBlob(async (blob) => {
+          if (!blob || foundRef.current) return;
+          const fd = new FormData();
+          fd.append("file", blob, "frame.jpg");
+          const res = await fetch("https://api.qrserver.com/v1/read-qr-code/", { method: "POST", body: fd });
+          if (!res.ok) return;
+          const json = await res.json() as { symbol: { data: string | null }[] }[];
+          const text = json?.[0]?.symbol?.[0]?.data;
+          if (text && !foundRef.current) { foundRef.current = true; processQRText(text); return; }
+        }, "image/jpeg", 0.8);
+      } catch {}
+    }
+
+    rafRef.current = requestAnimationFrame(scanFrame);
+  }, []);
+
+  const openCamera = async () => {
+    setCamError(""); setScanError(""); setScanResult(null); foundRef.current = false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      streamRef.current = stream;
+      setCamActive(true);
+      setScanning(true);
+      // Dar tiempo a que el video se monte
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().then(() => {
+            rafRef.current = requestAnimationFrame(scanFrame);
+          });
+        }
+      }, 100);
+    } catch {
+      setCamError(t.camError);
+    }
+  };
 
   // ── Leer QR desde imagen ──────────────────────────────────
   const handleImageFile = async (file: File) => {
-    setScanError("");
-    setScanResult(null);
+    setScanError(""); setScanResult(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch("https://api.qrserver.com/v1/read-qr-code/", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch("https://api.qrserver.com/v1/read-qr-code/", { method: "POST", body: formData });
       if (!res.ok) { setScanError(t.error); return; }
       const json = await res.json() as { symbol: { data: string | null }[] }[];
       const text = json?.[0]?.symbol?.[0]?.data;
       if (!text) { setScanError(t.error); return; }
       processQRText(text);
-    } catch {
-      setScanError(t.error);
-    }
+    } catch { setScanError(t.error); }
   };
 
   const processQRText = (raw: string) => {
+    stopCamera();
     const result = decodeRanks(raw.trim());
     if (!result) { setScanError(t.error); return; }
     setScanResult({ serverId: result.serverId, count: result.userData.size });
     setScanError("");
-    // Guardar para usar en handleImport
     (window as any).__qrImportData = result;
   };
 
@@ -171,23 +204,22 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
     const result: { serverId: ServerId; userData: Map<string, SealUserData> } | undefined =
       (window as any).__qrImportData;
     if (!result) return;
-
-    if (result.serverId !== serverId) {
-      if (!confirm(t.wrongServer)) return;
-    }
-
+    if (result.serverId !== serverId && !confirm(t.wrongServer)) return;
     setImporting(true);
     setTimeout(() => {
       onImport(result.userData, result.serverId);
-      setImporting(false);
-      setImported(true);
+      setImporting(false); setImported(true);
       setTimeout(() => onClose(), 1500);
     }, 300);
   };
 
+  const switchMode = (m: "show" | "scan") => {
+    stopCamera(); setMode(m); setScanResult(null); setScanError(""); setCamError("");
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.85)" }} onClick={onClose}>
+      style={{ background: "rgba(0,0,0,0.85)" }} onClick={() => { stopCamera(); onClose(); }}>
       <div className="bg-[#09141f] border border-[#1a3f6e] rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl"
         onClick={e => e.stopPropagation()}>
 
@@ -198,18 +230,15 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
               <span className="text-xl">📱</span>
               <h2 className="text-white font-bold text-sm">{t.title}</h2>
             </div>
-            <button onClick={onClose}
+            <button onClick={() => { stopCamera(); onClose(); }}
               className="text-[#5a8aaa] hover:text-white text-lg transition-colors">✕</button>
           </div>
-
-          {/* Tabs */}
           <div className="flex gap-1 mt-3">
             {(["show", "scan"] as const).map(m => (
-              <button key={m} onClick={() => { setMode(m); setScanResult(null); setScanError(""); }}
-                className={`flex-1 py-1.5 rounded text-xs font-mono font-bold border transition-all ${mode === m
-                  ? "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/12"
-                  : "border-[#1a3f6e] text-[#5a8aaa] hover:text-white"
-                  }`}>
+              <button key={m} onClick={() => switchMode(m)}
+                className={`flex-1 py-1.5 rounded text-xs font-mono font-bold border transition-all ${
+                  mode === m ? "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/12" : "border-[#1a3f6e] text-[#5a8aaa] hover:text-white"
+                }`}>
                 {m === "show" ? `📤 ${t.showQR}` : `📷 ${t.scanQR}`}
               </button>
             ))}
@@ -219,22 +248,19 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
         {/* Body */}
         <div className="p-5 space-y-4">
 
-          {/* ── MODO MOSTRAR QR ── */}
+          {/* ── MOSTRAR QR ── */}
           {mode === "show" && (
             <>
               <p className="text-[#5a8aaa] text-xs font-mono">{t.showDesc}</p>
-
               {sealCount === 0 ? (
                 <div className="py-8 text-center text-[#2a4558] font-mono text-sm">{t.noRanks}</div>
               ) : (
                 <>
                   <div className="flex justify-center">
                     <div className="p-2 bg-white rounded-xl">
-                      <img src={qrUrl} alt="QR Sync" width={240} height={240}
-                        className="rounded-lg" />
+                      <img src={qrUrl} alt="QR Sync" width={240} height={240} className="rounded-lg" />
                     </div>
                   </div>
-
                   <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-[#060d18] border border-[#1a3f6e]">
                     <div>
                       <p className="text-white text-xs font-bold font-mono">{sealCount} {t.seals}</p>
@@ -247,34 +273,68 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
             </>
           )}
 
-          {/* ── MODO ESCANEAR ── */}
+          {/* ── ESCANEAR ── */}
           {mode === "scan" && (
             <>
               <p className="text-[#5a8aaa] text-xs font-mono">{t.scanDesc}</p>
 
-              <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f); e.target.value = ""; }} />
-
-              <button onClick={() => fileRef.current?.click()}
-                className="w-full py-3 rounded-xl border-2 border-dashed border-[#1a3f6e] text-[#5a8aaa] text-sm font-mono hover:border-[#00c8f0] hover:text-[#00c8f0] transition-all">
-                📂 {t.loadImg}
-              </button>
-
-              {/* Texto manual */}
-              <div>
-                <p className="text-[#2a4558] text-[10px] font-mono mb-1">{t.orManual}</p>
-                <textarea rows={3}
-                  placeholder={t.manual}
-                  onChange={e => { if (e.target.value.trim()) processQRText(e.target.value); }}
-                  className="w-full px-3 py-2 rounded-lg bg-[#060d18] border border-[#1a3f6e] text-white font-mono text-xs focus:border-[#00c8f0] focus:outline-none resize-none placeholder-[#2a4558]" />
-              </div>
-
-              {/* Error */}
-              {scanError && (
-                <p className="text-red-400 text-xs font-mono">{scanError}</p>
+              {/* Visor de cámara */}
+              {camActive && (
+                <div className="relative rounded-xl overflow-hidden bg-black border border-[#1a3f6e]">
+                  <video ref={videoRef} playsInline muted
+                    className="w-full rounded-xl" style={{ maxHeight: 220, objectFit: "cover" }} />
+                  {/* Canvas oculto para capturar frames */}
+                  <canvas ref={canvasRef} className="hidden" />
+                  {/* Overlay de guía */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="w-40 h-40 border-2 border-[#00c8f0] rounded-xl opacity-70" />
+                  </div>
+                  {scanning && (
+                    <div className="absolute bottom-2 left-0 right-0 flex justify-center">
+                      <span className="text-[#00c8f0] text-[10px] font-mono bg-black/60 px-2 py-1 rounded-full animate-pulse">
+                        {t.scanning}
+                      </span>
+                    </div>
+                  )}
+                  <button onClick={stopCamera}
+                    className="absolute top-2 right-2 px-2 py-1 rounded-lg bg-black/60 text-[#5a8aaa] text-[10px] font-mono hover:text-white transition-colors">
+                    ✕ {t.closeCam}
+                  </button>
+                </div>
               )}
 
-              {/* Preview resultado */}
+              {/* Botón abrir cámara */}
+              {!camActive && !scanResult && (
+                <button onClick={openCamera}
+                  className="w-full py-3 rounded-xl border-2 border-[#00c8f0]/50 text-[#00c8f0] text-sm font-mono hover:bg-[#00c8f0]/10 transition-all flex items-center justify-center gap-2">
+                  📷 {t.openCam}
+                </button>
+              )}
+
+              {camError && <p className="text-red-400 text-xs font-mono">{camError}</p>}
+
+              {/* Cargar imagen */}
+              {!camActive && (
+                <>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f); e.target.value = ""; }} />
+                  <button onClick={() => fileRef.current?.click()}
+                    className="w-full py-3 rounded-xl border-2 border-dashed border-[#1a3f6e] text-[#5a8aaa] text-sm font-mono hover:border-[#00c8f0] hover:text-[#00c8f0] transition-all">
+                    📂 {t.loadImg}
+                  </button>
+
+                  {/* Texto manual */}
+                  <div>
+                    <p className="text-[#2a4558] text-[10px] font-mono mb-1">{t.orManual}</p>
+                    <textarea rows={2} placeholder={t.manual}
+                      onChange={e => { if (e.target.value.trim()) processQRText(e.target.value); }}
+                      className="w-full px-3 py-2 rounded-lg bg-[#060d18] border border-[#1a3f6e] text-white font-mono text-xs focus:border-[#00c8f0] focus:outline-none resize-none placeholder-[#2a4558]" />
+                  </div>
+                </>
+              )}
+
+              {scanError && <p className="text-red-400 text-xs font-mono">{scanError}</p>}
+
               {scanResult && !scanError && (
                 <div className="px-3 py-2 rounded-lg border border-[#00e676]/30 bg-[#00e676]/05">
                   <p className="text-[#00e676] text-xs font-bold font-mono">✓ QR leído</p>
@@ -284,20 +344,18 @@ export function SyncQRModal({ data, serverId, lang, onImport, onClose }: Props) 
                 </div>
               )}
 
-              {/* Botón importar */}
               {scanResult && (
                 <button onClick={handleImport} disabled={importing || imported}
-                  className={`w-full py-2.5 rounded-xl text-sm font-bold font-mono border transition-all ${imported
-                    ? "border-[#00e676] text-[#00e676] bg-[#00e676]/10"
-                    : "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/10 hover:bg-[#00c8f0]/20"
-                    }`}>
+                  className={`w-full py-2.5 rounded-xl text-sm font-bold font-mono border transition-all ${
+                    imported ? "border-[#00e676] text-[#00e676] bg-[#00e676]/10"
+                             : "border-[#00c8f0] text-[#00c8f0] bg-[#00c8f0]/10 hover:bg-[#00c8f0]/20"
+                  }`}>
                   {imported ? `✓ ${t.imported}` : importing ? t.importing : `⬇ ${t.import}`}
                 </button>
               )}
             </>
           )}
 
-          {/* Tip */}
           <p className="text-[#2a4558] text-[10px] font-mono leading-relaxed">{t.tip}</p>
         </div>
       </div>

@@ -123,6 +123,7 @@ export const DMO_NO_MARKET_SEALS = new Set<string>([
   "Blue Serpent Seal",
   "Brave Seal",
   "Conversion Seal",
+  "Digital Vacation AT Seal",
   "Environment Seal",
   "Family Seal",
   "Firm Seal",

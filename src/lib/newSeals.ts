@@ -12,7 +12,7 @@ const HIGHLIGHT_DAYS = 14;
 // ── Lista de seals nuevas del último patch ────────────────────
 // Actualizar aquí cuando salga un nuevo patch con seals nuevas.
 export const NEW_SEALS_DMO = new Set<string>([
-  // Patch Jun 2026 — ejemplo, ajustar según patch real
+  "Digital Vacation AT Seal",
 ]);
 
 /** Devuelve true si el sello debe mostrarse como "nuevo" */
